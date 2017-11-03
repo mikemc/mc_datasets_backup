@@ -25,9 +25,9 @@ fns.all = list.files(path, recursive=TRUE)
 fnIs = grep(pattern="raw/HL-I/.*_R1.fastq.gz$", fns.all, value=TRUE)
 fnFs = grep(pattern="raw/HL-[^I]/.*_R1.fastq.gz$", fns.all, value=TRUE)
 fnRs = grep(pattern="raw/HL-[^I]/.*_R2.fastq.gz$", fns.all, value=TRUE)
-names(fnIs) <- sapply(strsplit(fnIs, "[_/]"), `[`, 3)
-names(fnFs) <- sapply(strsplit(fnFs, "[_/]"), `[`, 3)
-names(fnRs) <- sapply(strsplit(fnRs, "[_/]"), `[`, 3)
+names(fnIs) <- sapply(strsplit(fnIs, "[_/]"), "[", 3)
+names(fnFs) <- sapply(strsplit(fnFs, "[_/]"), "[", 3)
+names(fnRs) <- sapply(strsplit(fnRs, "[_/]"), "[", 3)
 identical(names(fnRs), names(fnFs))
 
 #### Choose parameters 
@@ -52,15 +52,41 @@ colnames(trim.params) = c('trimF', 'trimR', 'truncF', 'truncR')
 
 # Function for getting the read length distribution from a list of fastq files
 read_lengths = function(fns) {
-    lapply(lapply(fns, readFastq), function (x) table(width(x)))
+    lapply(lapply(fns, readFastq), function (x) width(x))
+}
+read_lengths_summary = function(fns) {
+    lapply(read_lengths(fns), summary)
+}
+read_lengths_table = function(fns) {
+    lapply(read_lengths(fns), table)
 }
 
 ## Check quality profiles and read lengths; pick params
 # I will aim for trimming at least 2 bp from the ends of the shortest reads.
 # Quality profiles for all labs
-qpFs = lapply(test.samples[-7], function(x) plotQualityProfile(fnFs[x]))
-qpRs = lapply(test.samples[-7], function(x) plotQualityProfile(fnRs[x]))
-qpIs = plotQualityProfile(fnIs[test.samples$I])
+#
+# qpFs = lapply(test.samples[-7], function(x) plotQualityProfile(fnFs[x]))
+# qpRs = lapply(test.samples[-7], function(x) plotQualityProfile(fnRs[x]))
+# qpIs = plotQualityProfile(fnIs[test.samples$I])
+# saveRDS(qpFs, file.path(path, 'qc', paste0('quality_profiles_Fs', '.rds')))
+# saveRDS(qpRs, file.path(path, 'qc', paste0('quality_profiles_Rs', '.rds')))
+# saveRDS(qpIs, file.path(path, 'qc', paste0('quality_profiles_labI', '.rds')))
+#
+# Load previously saved quality profiles
+qpFs = readRDS(file.path(path, 'qc', paste0('quality_profiles_Fs', '.rds')))
+qpRs = readRDS(file.path(path, 'qc', paste0('quality_profiles_Rs', '.rds')))
+qpIs = readRDS(file.path(path, 'qc', paste0('quality_profiles_labI', '.rds')))
+
+## Check read lengths
+# rlFs = lapply(test.samples[-7], function(x) read_lengths(fnFs[x])) 
+# rlRs = lapply(test.samples[-7], function(x) read_lengths(fnRs[x])) 
+# rlIs = read_lengths(fnIs[test.samples$I])
+# saveRDS(rlFs, file.path(path, 'qc', paste0('read_lengths_Fs', '.rds')))
+# saveRDS(rlRs, file.path(path, 'qc', paste0('read_lengths_Rs', '.rds')))
+# saveRDS(rlIs, file.path(path, 'qc', paste0('read_lengths_labI', '.rds')))
+rlFs = readRDS(file.path(path, 'qc', paste0('read_lengths_Fs', '.rds')))
+rlRs = readRDS(file.path(path, 'qc', paste0('read_lengths_Rs', '.rds')))
+rlIs = readRDS(file.path(path, 'qc', paste0('read_lengths_labI', '.rds')))
 
 ## HL-B
 # Forward
@@ -371,6 +397,8 @@ for (lab in seqlabs[-c(7)]) {
 # numbers of reads in the R1 and R2 files. Running with matchIDs=TRUE fixes the
 # error, but filters a majority of reads (my guess is b/c of id matching, as
 # opposed to quality and length issues)
+lab='D'
+sample.names = split.samples[[lab]]
 out = filterAndTrim(fnFs[sample.names], filtFs[sample.names],
                     fnRs[sample.names], filtRs[sample.names],
                     trimLeft=trim.params[lab, c('trimF', 'trimR')],
@@ -384,6 +412,14 @@ out = filterAndTrim(fnFs[sample.names], filtFs[sample.names],
 # mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE, justConcatenate=TRUE)
 errF = readRDS(file.path(path, 'dada_out', paste0('errF_', lab, '.rds')))
 errR = readRDS(file.path(path, 'dada_out', paste0('errR_', lab, '.rds')))
+## Track reads through pipeline---nothing after merging
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(mergers, getN), 0, 0)
+colnames(track) <- c("input", "filtered", "denoised", "merged", "tabled",
+                     "nonchim")
+rownames(track) <- sample.names
+saveRDS(track, file.path(path, 'dada_out', paste0('track_', lab, '.rds')))
+
 
 #### HL-I: single-end reads
 lab = 'I'

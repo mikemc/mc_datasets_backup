@@ -1,0 +1,123 @@
+# Evaluation of dada2 pipeline on all sequencing labs
+
+```{r package_options, include=FALSE}
+knitr::opts_knit$set(progress = TRUE, verbose = TRUE)
+# There are lots of messages about the phylo object being defined by multiple
+# packages, which we do not need to see
+knitr::opts_chunk$set(message=FALSE)
+```
+
+```{r setup, include=FALSE}
+library(stringr)
+library(phyloseq); library(dada2);packageVersion("dada2")
+library(Biostrings); library(ShortRead)
+library(ggplot2)
+
+## Metadata for each sequencing lab
+df = readRDS(file.path('~/active_research/metagenomics_calibration/mbqc/data',
+             'blinded_sequence_table.rds'))
+path = "~/data/mbqc/blinded_sequence_data"
+setwd(path)
+            
+## Primer sequences
+F515 <- "GTGCCAGCMGCCGCGGTAA"
+R806 <- "GGACTACHVGGGTWTCTAAT"
+F318 <- "ACTCCTACGGGAGGCAGCAG"
+F515_HLC <- "GTGTGCCAGCMGCCGCGGTAA"
+# HL-C used an F515 primer with an extra 2bp inserted in after the first 2bp of
+# the F515 primer sequence quoted in the paper (see
+# mbqc_handling_protocols.xlsx)
+
+## Filenames of raw data, used for quality profiles
+# All labs have paired end reads except for HL-I
+fns.all = list.files(path, recursive=TRUE)
+fnIs = grep(pattern="raw/HL-I/.*_R1.fastq.gz$", fns.all, value=TRUE)
+fnFs = grep(pattern="raw/HL-[^I]/.*_R1.fastq.gz$", fns.all, value=TRUE)
+fnRs = grep(pattern="raw/HL-[^I]/.*_R2.fastq.gz$", fns.all, value=TRUE)
+names(fnIs) <- sapply(strsplit(fnIs, "[_/]"), "[", 3)
+names(fnFs) <- sapply(strsplit(fnFs, "[_/]"), "[", 3)
+names(fnRs) <- sapply(strsplit(fnRs, "[_/]"), "[", 3)
+identical(names(fnRs), names(fnFs))
+
+# List of labs and samples for each lab
+split.samples = split(df$Bioinformatics.ID, df$sequencing_wetlab)
+names(split.samples) = str_sub(names(split.samples), -1)
+seqlabs = names(split.samples)
+num.samples = sapply(split.samples,length)
+# Load up to three test samples for each lab to check quality # profiles.
+set.seed(1)
+test.samples = mapply(sample, split.samples, sapply(num.samples, min, 3))
+
+# Load chosen trim.params
+trim.params = readRDS(file.path(path, 'dada_out', paste0('trim_params', '.rds')))
+
+## Load quality profiles of test samples
+qpFs = readRDS(file.path(path, 'qc', paste0('quality_profiles_Fs', '.rds')))
+qpRs = readRDS(file.path(path, 'qc', paste0('quality_profiles_Rs', '.rds')))
+qpIs = readRDS(file.path(path, 'qc', paste0('quality_profiles_labI', '.rds')))
+## Load read lengths of test samples
+rlFs = readRDS(file.path(path, 'qc', paste0('read_lengths_Fs', '.rds')))
+rlRs = readRDS(file.path(path, 'qc', paste0('read_lengths_Rs', '.rds')))
+rlIs = readRDS(file.path(path, 'qc', paste0('read_lengths_labI', '.rds')))
+```
+
+Overlap between R1 and R2 assuming a max amplicon length of 255 bp:
+```{r, echo=TRUE}
+overlaps = with(trim.params, truncF + truncR - trimF - trimR - 255)
+names(overlaps) = rownames(trim.params)
+print(overlaps)
+```
+
+Filtering parameters used: `maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE`
+
+Results from runs on all labs
+```{r track_table, echo=FALSE}
+track.li = lapply(file.path(path, 'dada_out', 
+                            paste0('track_', seqlabs, '.rds')),
+                  function(x) as.data.frame(readRDS(x)))
+names(track.li) = seqlabs
+track.li$I$merged = NA
+track.df = do.call(rbind, unname(track.li))
+track.df$HL = unlist(df[rownames(track.df), 'sequencing_wetlab'])
+# Note: filtered==denoised and tabled==merged, at least for this data.
+track.df = within(track.df, {
+    f.nonchim = nonchim/tabled
+    f.merged = merged/denoised
+    f.filtered = filtered/input
+    })
+track.bylab = aggregate(track.df, list(track.df$HL), mean)
+rownames(track.bylab) = track.bylab$Group.1
+track.bylab = subset(track.bylab, select=-c(Group.1, HL))
+track.bylab$num.samples = sapply(split.samples, length)
+print(track.bylab)
+```
+
+Quality profiles with trim and truncation parameters for all labs except D and
+I, and the tracking matrix from running the full pipeline.
+```{r, echo=FALSE}
+for (lab in seqlabs[-c(3,7)]) {
+    print(paste('Sequencing lab', lab))
+    tps = unlist(trim.params[lab, ])
+    print(paste('Trim parameters: trimLeft=', tps[1], tps[2], 
+                ', truncLen=', tps[3], tps[4]))
+    print('Read lengths (Forward)')
+    print(summary(c(unlist(rlFs[lab]))))
+    print('Read lengths (Reverse)')
+    print(summary(c(unlist(rlRs[lab]))))
+    print('Quality Profiles')
+    if (lab != 'C') {
+        print(qpFs[[lab]] + geom_vline(xintercept=tps['truncF']))
+        print(qpRs[[lab]] + geom_vline(xintercept=tps['truncR']))
+    }
+    if (lab == 'C') {
+        print(qpFs[[lab]] + geom_vline(xintercept=tps['trimF']) + 
+            geom_vline(xintercept=tps['truncF']))
+        print(qpRs[[lab]] + geom_vline(xintercept=tps['trimR']) + 
+            geom_vline(xintercept=tps['truncR']))
+    }
+    # Results from pipeline
+    print('Read tracking')
+    track = readRDS(file.path(path, 'dada_out', paste0('track_', lab, '.rds')))
+    print(head(track, 6))
+}
+```
