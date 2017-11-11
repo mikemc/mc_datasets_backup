@@ -16,6 +16,7 @@ library(ggplot2)
 ## Metadata for each sequencing lab
 df = readRDS(file.path('~/active_research/metagenomics_calibration/mbqc/data',
              'blinded_sequence_table.rds'))
+# df$sequencing_wetlab = sapply(df$sequencing_wetlab, str_sub, -1)
 path = "~/data/mbqc/blinded_sequence_data"
 setwd(path)
             
@@ -59,42 +60,108 @@ qpIs = readRDS(file.path(path, 'qc', paste0('quality_profiles_labI', '.rds')))
 rlFs = readRDS(file.path(path, 'qc', paste0('read_lengths_Fs', '.rds')))
 rlRs = readRDS(file.path(path, 'qc', paste0('read_lengths_Rs', '.rds')))
 rlIs = readRDS(file.path(path, 'qc', paste0('read_lengths_labI', '.rds')))
-```
 
-Overlap between R1 and R2 assuming a max amplicon length of 255 bp:
-```{r, echo=TRUE}
+# Compute min overlap assuming max length 255
 overlaps = with(trim.params, truncF + truncR - trimF - trimR - 255)
 names(overlaps) = rownames(trim.params)
-print(overlaps)
-```
 
-Filtering parameters used: `maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE`
-
-Results from runs on all labs
-```{r track_table, echo=FALSE}
+# Compute tracking table
 track.li = lapply(file.path(path, 'dada_out', 
                             paste0('track_', seqlabs, '.rds')),
                   function(x) as.data.frame(readRDS(x)))
 names(track.li) = seqlabs
 track.li$I$merged = NA
 track.df = do.call(rbind, unname(track.li))
-track.df$HL = unlist(df[rownames(track.df), 'sequencing_wetlab'])
+# track.df$HL = unlist(df[rownames(track.df), 'sequencing_wetlab'])
 # Note: filtered==denoised and tabled==merged, at least for this data.
 track.df = within(track.df, {
     f.nonchim = nonchim/tabled
     f.merged = merged/denoised
     f.filtered = filtered/input
+    f.total = nonchim/input
     })
-track.bylab = aggregate(track.df, list(track.df$HL), mean)
-rownames(track.bylab) = track.bylab$Group.1
-track.bylab = subset(track.bylab, select=-c(Group.1, HL))
+track.bylab = aggregate(track.df, df[rownames(track.df), 'sequencing_wetlab'],
+                        mean)
+rownames(track.bylab) = sapply(track.bylab$sequencing_wetlab, str_sub, -1)
+track.bylab = subset(track.bylab, select=-sequencing_wetlab)
 track.bylab$num.samples = sapply(split.samples, length)
-print(track.bylab)
+
+## Info for each lab
+hl.df = subset(df, select=c(sequencing_wetlab, seq_machine, paired_end_reads,
+                            read_length, frac_quality_bases, phiX_frac))
+hl.df = unique(hl.df)
+rownames(hl.df) = sapply(hl.df$sequencing_wetlab, str_sub, -1)
+hl.df = subset(hl.df, select=-sequencing_wetlab)
+# Fix wrong data
+hl.df['F', 'paired_end_reads'] = 'Yes'
+hl.df['I', 'paired_end_reads'] = 'No'
+#
+med.rlF = lapply(rlFs, function (x) median(unlist(x)))
+med.rlR = lapply(rlRs, function (x) median(unlist(x)))
+med.rlF$I = median(unlist(rlIs))
+med.rlR$I = NA
+hl.df$read_length.F = med.rlF[rownames(hl.df)]
+hl.df$read_length.R = med.rlR[rownames(hl.df)]
 ```
 
-Quality profiles with trim and truncation parameters for all labs except D and
-I, and the tracking matrix from running the full pipeline.
+Basic info for each lab. Read lengths are the median in three test files, and
+differ from what was reported for labs F and I. Similarly, the pair-end status
+was incorrectly reported for labs F and I. The fields frac_quality_bases and
+phiX_frac are what was reported to MBQC.
+```{r, echo=FALSE, R.options=list(width=100)}
+print(subset(hl.df, select=c(seq_machine, paired_end_reads, 
+                             read_length.F, read_length.R,
+                             frac_quality_bases, phiX_frac)))
+```
+
+Trim and truncation parameters used, with min overlap between the forward and
+reverse reads assuming a max amplicon length of 255 bp:
 ```{r, echo=FALSE}
+trim.params$overlap = overlaps
+print(trim.params)
+```
+
+Filtering parameters used: `maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE`
+except for lab M, where I raised the error rate to `maxEE=c(10,10)`.
+
+Summary of the runs on all labs, averaging across samples in the lab. The
+number of samples, average number of input reads per sample, and the average
+fraction kept at the filtering, merging, and chimera-removal steps, and average
+fraction kept overall.
+```{r, echo=FALSE}
+print(track.bylab[, c('num.samples', 'input', 'f.filtered', 'f.merged',
+                      'f.nonchim', 'f.total')],
+      digits=2)
+```
+
+
+## Quality profiles
+
+```{r, eval=FALSE, echo=FALSE, results='asis'}
+for (lab in seqlabs) {
+    cat('  \n###Sequencing lab', lab)
+    cat('  \n')
+    tps = unlist(trim.params[lab, ])
+    if (! lab %in% c('C', 'I')) {
+        print(qpFs[[lab]] + geom_vline(xintercept=tps['truncF']))
+        print(qpRs[[lab]] + geom_vline(xintercept=tps['truncR']))
+    }
+    if (lab == 'C') {
+        print(qpFs[[lab]] + geom_vline(xintercept=tps['trimF']) + 
+            geom_vline(xintercept=tps['truncF']))
+        print(qpRs[[lab]] + geom_vline(xintercept=tps['trimR']) + 
+            geom_vline(xintercept=tps['truncR']))
+    }
+    if (lab == 'I') {
+        print(qpIs + geom_vline(xintercept=tps['trimF']) + 
+            geom_vline(xintercept=tps['truncF']))
+    }
+    cat('  \n')
+}
+```
+
+<!-- Old -->
+```{r, echo=FALSE, eval=FALSE}
 for (lab in seqlabs[-c(3,7)]) {
     print(paste('Sequencing lab', lab))
     tps = unlist(trim.params[lab, ])
@@ -121,3 +188,4 @@ for (lab in seqlabs[-c(3,7)]) {
     print(head(track, 6))
 }
 ```
+

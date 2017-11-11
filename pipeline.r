@@ -231,12 +231,19 @@ trim.params['H', c('truncF', 'truncR')] = c(245, 220)
 trim.params['J', c('truncF', 'truncR')] = c(245, 228)
 trim.params['K', c('truncF', 'truncR')] = c(148, 148)
 trim.params['L', c('truncF', 'truncR')] = c(127, 148)
-trim.params['M', c('truncF', 'truncR')] = c(173, 133)
+# trim.params['M', c('truncF', 'truncR')] = c(173, 133)
+# trim.params['M', c('truncF', 'truncR')] = c(160, 130)
+trim.params['M', c('truncF', 'truncR')] = c(160, 120)
 trim.params['N', c('truncF', 'truncR')] = c(225, 222)
+trim.params['I', 'truncF'] = 245
 trim.params
 ## Check overlap lengths
 # Want at least 20 when true sequence length is 255
 with(trim.params, truncF + truncR - trimF - trimR - 255)
+
+# Save trim.params
+saveRDS(trim.params, file.path(path, 'dada_out', paste0('trim_params', '.rds')))
+
 
 #### Trim and filter; learn errors; run dada2
 
@@ -249,9 +256,6 @@ filtIs = file.path(filt_path, paste0(names(fnIs), "_R1_filt.fastq.gz"))
 names(filtIs) = names(fnIs)
 
 # Make sure folders exist: filtered, dada_output
-
-# Save trim.params
-saveRDS(trim.params, file.path(path, 'dada_out', paste0('trim_params', '.rds')))
 
 # run.times =  data.frame(matrix(0, ncol = 4, nrow = length(seqlabs)))
 # rownames(run.times) = seqlabs
@@ -420,8 +424,24 @@ colnames(track) <- c("input", "filtered", "denoised", "merged", "tabled",
 rownames(track) <- sample.names
 saveRDS(track, file.path(path, 'dada_out', paste0('track_', lab, '.rds')))
 
+## HL-M
+# trim.params['M', c('truncF', 'truncR')] = c(160, 130)
+out = filterAndTrim(fnFs[sample.names], filtFs[sample.names],
+                    fnRs[sample.names], filtRs[sample.names],
+                    trimLeft=trim.params[lab, c('trimF', 'trimR')],
+                    truncLen=trim.params[lab, c('truncF', 'truncR')],
+                    maxN=0, maxEE=c(10,10), truncQ=2,
+                    rm.phix=TRUE, compress=TRUE, multithread=TRUE)
+
 
 #### HL-I: single-end reads
+
+# For choosing error tolerance, can use vsearch command: 
+# vsearch --fastq_eestats2 ~/data/mbqc/blinded_sequence_data/raw/HL-I/4375574631_R1.fastq.gz --ee_cutoffs 1,2,4,6,8 --length_cutoffs 240,250,5 --output -
+# Suggests would keep ~90% at maxEE=5 and 245bp but doesn't account for the
+# truncation at Q=2.
+# Increasing maxEE from 2 to 5 seems to make almost no difference b/c of truncQ = 2
+
 lab = 'I'
 # Free memory
 gc()
@@ -432,11 +452,14 @@ print(paste('Starting HL', lab, 'with', length(sample.names), 'samples'))
 print('Trimming and filtering')
 out = filterAndTrim(fnIs[sample.names], filtIs[sample.names],
                     trimLeft=0,
-                    truncLen=247,
+                    truncLen=trim.params['I', 'truncF'],
                     maxN=0, maxEE=2, truncQ=2,
                     rm.phix=TRUE, compress=TRUE, multithread=TRUE)
 # Truncation length 247 was chosen after seeing that truncLen=0 and truncQ=2
-# led to a mode of read lengths 247. 
+# led to a mode of read lengths 247. Makes sense, since median Q drops to 2 at
+# 248. BJC suggested better to truncate at 245, to stay enough away from the
+# crappy Q=2 bases, so reran with that on 11/03. Looking at vsearch profile on
+# one sample shows that 245 is the point where the median rises to above 30.
 print(head(out))
 ## Derep
 print('Dereplicating')
@@ -479,3 +502,24 @@ saveRDS(seqtab, file.path(path, 'dada_out',
 saveRDS(seqtab.nochim, file.path(path, 'dada_out',
                                  paste0('seqtab_nochim_', lab, '.rds')))
 saveRDS(track, file.path(path, 'dada_out', paste0('track_', lab, '.rds')))
+
+
+#### Inspect error profiles
+errFs = lapply(file.path(path, 'dada_out', paste0('errF_', seqlabs[-7], '.rds')), readRDS)
+errRs = lapply(file.path(path, 'dada_out', paste0('errF_', seqlabs[-7], '.rds')), readRDS)
+errI = readRDS(file.path(path, 'dada_out', 'err_I.rds'))
+names(errFs) = names(errRs) = seqlabs[-7]
+
+for (lab in seqlabs[-7]) {
+    print(paste('HL', lab, ': Forward'))
+    print(plotErrors(errFs[[lab]]))
+    readline(prompt="Press [enter] to continue")
+    print(paste('HL', lab, ': Reverse'))
+    print(plotErrors(errRs[[lab]]))
+    readline(prompt="Press [enter] to continue")
+}
+plotErrors(errFs$D)
+plotErrors(errRs$D)
+plotErrors(errI)
+# Look ok except for HL-L, and some noisiness in some labs perhaps from low
+# read counts

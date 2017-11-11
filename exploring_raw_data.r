@@ -212,3 +212,16 @@ seqs <- getSequences(st1)
 names(seqs) <- seqs
 alignment <- AlignSeqs(DNAStringSet(seqs), anchor=NA)
 
+##############################################################################
+path = "~/data/mbqc/blinded_sequence_data"
+setwd(path)
+
+## Check if the two sequencing runs in lab E have similar QPs
+
+## Check if the G and H samples sequenced in lab F have similar QPs
+g.samples = rownames(subset(df, extraction_wetlab=='HL-G'))
+f.samples = rownames(subset(df, extraction_wetlab=='HL-F'))
+# g.qps = plotQualityProfile(fnFs[g.samples])
+# f.qps = plotQualityProfile(fnFs[f.samples])
+qps = plotQualityProfile(fnFs[c(g.samples, f.samples)])
+# Look very similar
