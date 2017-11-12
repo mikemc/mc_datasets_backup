@@ -4,6 +4,9 @@ ps.all = readRDS(file.path('~/active_research/metagenomics_calibration/mbqc/data
                            'mbqc_phyloseq.rds'))
 meta = sample_data(ps.all)
 meta = subset_samples(meta, (MBQC.ID == 'DZ15296') & (sequencing_wetlab != 'HL-A'))
+# saveRDS(meta,
+#         file.path('~/active_research/metagenomics_calibration/mbqc/data/',
+#                   "mbqc_sample_data.rds"))
 df = unique(meta[, c('Bioinformatics.ID', 
                      'extraction_wetlab', 'sequencing_wetlab',
                      "X16S_primer",
