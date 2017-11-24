@@ -395,6 +395,10 @@ for (lab in seqlabs[-c(7)]) {
 
 # Done: all except D
 
+## Lab N note
+# The paired files had the same lengths for this specimen, but not for all
+# specimens, and so mergeIDs=TRUE is needed on the cluster run. It may be worth
+# looking into the files that don't match up
 
 ## HL-D
 # Running filterAndTrim with default, matchIDs=FALSE, fails b/c of unequal
