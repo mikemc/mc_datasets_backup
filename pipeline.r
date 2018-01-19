@@ -132,13 +132,18 @@ trim.params['E', c('truncF', 'truncR')] = c(148, 148)
 
 ## HL-F
 # Forward
-read_lengths(fnFs[test.samples$F]) # F reads all 152 bp
+read_lengths_table(fnFs[test.samples$F]) # F reads all 152 bp
 qpFs$F + geom_vline(xintercept=148)
 # R
-read_lengths(fnRs[test.samples$F]) # R reads all 152 bp 
+read_lengths_table(fnRs[test.samples$F]) # R reads all 152 bp 
 qpRs$F + geom_vline(xintercept=148)
 # Set params
 trim.params['F', c('truncF', 'truncR')] = c(148, 148)
+# 2018-01-19: Results from running the dada2 pipeline suggest we need to trim
+# the first bp from the forward and reverse reads, which perhaps resulted from
+# incompeltely trimmed primer sequences. On second look at the QPs, we can see
+# that the first bp in Fs and Rs has signiticantly higher Q score than the
+# following bps, which might be an indicator of such a problem.
 
 ## HL-H
 # Forward
@@ -203,13 +208,16 @@ trim.params['M', c('truncF', 'truncR')] = c(173, 133)
 ## HL-N
 # Quality decent, but a drop off we can cut since long reads
 # Forward
-read_lengths(fnFs[test.samples$N]) # vast maj 251-253
+read_lengths_table(fnFs[test.samples$N]) # vast maj 251-253
 qpFs$N + geom_vline(xintercept=225) # avg ~Q30 at ~225
 # Reverse
-read_lengths(fnRs[test.samples$N]) # vast maj 247-249
+read_lengths_table(fnRs[test.samples$N]) # vast maj 247-249
 qpRs$N + geom_vline(xintercept=222) # avg ~Q30 at ~222
 # Set params
 trim.params['N', c('truncF', 'truncR')] = c(225, 222)
+# 2018-01-19: Results of the dada2 pipeline suggest that we need to trim the
+# first bp from the forward reads. Unlike for lab F, the QPs in this case don't
+# seem to indicate anything special about the first bp.
 
 ## HL-I, single-end reads
 # vast maj 252-253, with one ~315
