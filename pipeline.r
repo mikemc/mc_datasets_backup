@@ -1,5 +1,6 @@
 library(stringr)
-library(phyloseq); library(dada2);packageVersion("dada2")
+# library(phyloseq); 
+library(dada2);packageVersion("dada2")
 library(Biostrings); library(ShortRead)
 library(ggplot2)
 
