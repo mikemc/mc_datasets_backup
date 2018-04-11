@@ -1,0 +1,103 @@
+## Downloading Illumina data
+
+For now, will do for just the single specimen onto my local machine.
+```{r, eval=FALSE}
+# Read in metadata
+library(phyloseq)
+setwd('~/active_research/metagenomics_calibration/mbqc/data/')
+ps.all = readRDS('mbqc_phyloseq.rds')
+meta = sample_data(ps.all)
+# Subset to 36yr Male and remove HL-A, since they used a different primer set
+meta = subset_samples(meta, (MBQC.ID == 'DZ15296') & (sequencing_wetlab != 'HL-A'))
+# For downloading all data onto the cluster, just get rid of HL-A and NA's:
+# meta = subset_samples(meta, (sequencing_wetlab != 'HL-A') & !is.na(sequencing_wetlab))
+# Get ('sequencing_wetlab', 'Bioinformatics.ID') pairs
+df = unique(meta[, c('extraction_wetlab', 'sequencing_wetlab',
+                     'Bioinformatics.ID', 'paired_end_reads')])
+# Bioinformatics.ID's in the sample data have leading 0's removed; these need
+# to be adding back in before constructing the URLs.
+target.length = 10
+df$Bioinformatics.ID = stringr::str_pad(df$Bioinformatics.ID,
+                                        target.length, side='left',
+                                        pad='0')
+# Build urls for forward and reverse reads and add to df
+# Note that samples extracted in lab G (all of which were sequenced in lab F)
+# are in the HL-G folder on the data server
+# folders = ifelse(df$extraction_wetlab%in%'HL-G', df$extraction_wetlab,
+#                  df$sequencing_wetlab)
+# Unfortunately, this method fails due to some inconsistency in the sample
+# data. Instead, we need to choose based on 'HL.G' in the sample name
+folders = ifelse(grepl('G', sample_names(df)), 'HL-G',
+                 df$sequencing_wetlab)
+urlFs = paste0("http://downloads.ihmpdcc.org/data/MBQCBD2/",
+               folders, "/R1/", df$Bioinformatics.ID,
+               "_R1.fastq.gz")
+urlRs = paste0("http://downloads.ihmpdcc.org/data/MBQCBD2/",
+               folders, "/R2/", df$Bioinformatics.ID,
+               "_R2.fastq.gz")
+df$urlF = urlFs
+df$urlR = urlRs
+# Don't do this for now, since the metadata seems to be incorrect about paired
+# end reads
+# df$urlR[df$paired_end_reads=='No'] = ''
+# Download into folders for each HL
+path <- "~/data/mbqc/raw_blinded/"
+setwd(path)
+for (HL in unique(df$sequencing_wetlab)) {
+    system(paste("mkdir", HL))
+}
+for (HL in unique(df$sequencing_wetlab)) {
+    df.sub = df[df$sequencing_wetlab == HL]
+    urls = c(df.sub$urlF, df.sub$urlR)
+    for (url in urls) {
+        # The -N option will skip the download if it already exists and the
+        # server version hasn't been modified
+        system(paste("wget", "-N", url, "-P", HL))
+    }
+}
+
+# List files that weren't downloaded
+filepaths = c(paste0(df$sequencing_wetlab, "/", df$Bioinformatics.ID,
+                     "_R1.fastq.gz"), 
+              paste0(df$sequencing_wetlab, "/", df$Bioinformatics.ID,
+                     "_R2.fastq.gz"))
+if (!all(file.exists(filepaths))) {
+    print(filepaths[!file.exists(filepaths)])
+}
+```
+
+An issue is that the sample data says that HL-F was the lone sequencing lab
+that did not use paired-end reads. However, the data table shows that HL-I is
+the one lab that only has R1 files.
+```{r}
+table(meta[, c('sequencing_wetlab', 'paired_end_reads')])
+table(meta[, c('extraction_wetlab', 'paired_end_reads')])
+```
+
+Care needs to be taken with all files associated with HL-G. Consider the BI IDs
+8878153260, 3696810211, 3642745093. These are listed in the sample data as
+having extraction_lab <NA>, sequencing lab HL-F, but have a sample id of the
+form BL.4.HL.G.3642745093 and are in the HL-G folder on the server. I'm not
+sure where these samples were truly extracted. 
+
+The folder where the sequencing data is located on the server corresponds most
+reliably to the HL that appears in the sample name and not to what is in the
+extraction lab or sequencing lab fields. This seems to be only an issue for
+samples with HL-G in the name.
+
+Let's explore what is going on with the metadata. First, note that the blinded
+lab is always the sequencing lab.
+```{r}
+meta = subset_samples(meta, !is.na(MBQC.ID))
+all(meta$sequencing_wetlab==meta$blinded_lab) # TRUE
+```
+We already noticed that the sample variable "paired_end_reads" doesn't match
+the sequencing lab correctly. Let's check the other sequencing variables.
+```{r}
+unique(meta[, c('sequencing_wetlab', 'seq_machine', 'paired_end_reads',
+                "read_length")])
+```
+The read length for HL-I is reported as 210, but looks like 250 in the fastq files.
+The read length for HL-N is reported as 300, but looks like 250 in the fastq files.
+The read lengths for other labs seem accurate.
+
