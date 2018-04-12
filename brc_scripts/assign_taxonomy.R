@@ -22,8 +22,8 @@ taxa <- assignTaxonomy(st, tax.db, multithread=TRUE)
 # Add species
 taxa <- addSpecies(taxa, species.db, allowMultiple=TRUE)
 saveRDS(taxa, file.path(data.path, 
-        paste0(Sys.Date(), "taxonomy.Rds", sep="_"))
+        paste0(Sys.Date(), "taxonomy.Rds", sep="_")))
 # Also save species assignment for later inspection
 spec <- assignSpecies(st, species.db, allowMultiple=TRUE)
 saveRDS(spec, file.path(data.path, 
-        paste0(Sys.Date(), "species.Rds", sep="_"))
+        paste0(Sys.Date(), "species.Rds", sep="_")))
