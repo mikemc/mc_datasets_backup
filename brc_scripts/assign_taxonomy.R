@@ -12,7 +12,7 @@ tax.db <- file.path(silva.path, "silva_nr_v132_train_set.fa.gz")
 species.db <- file.path(silva.path, "silva_species_assignment_v132.fa.gz")
 
 ## Load sequence table
-st <- readRDS(file.path(data.path, "seqtab_all_nochim.rds"))
+st <- readRDS(file.path(data.path, "seqtab_all_nochim.Rds"))
 
 ## Assign taxonomy
 # Assign tax up to Genus
