@@ -15,6 +15,7 @@ st <- readRDS(file.path(data.path, "seqtab_all_nochim.Rds"))
 
 ## Assign species
 # Need at least 17.1 Gb of ram
-spec <- assignSpecies(st, species.db, tryRC = TRUE, allowMultiple=TRUE)
+spec <- assignSpecies(st, species.db, tryRC = TRUE, allowMultiple = TRUE,
+    verbose = TRUE)
 saveRDS(spec, file.path(data.path, 
-        paste0(Sys.Date(), "species.Rds", sep="_")))
+        paste(Sys.Date(), "species.Rds", sep="_")))

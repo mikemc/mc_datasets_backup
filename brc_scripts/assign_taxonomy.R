@@ -18,12 +18,15 @@ st <- readRDS(file.path(data.path, "seqtab_all_nochim.Rds"))
 
 ## Assign taxonomy
 # Assign tax up to Genus
-taxa <- assignTaxonomy(st, tax.db, tryRC = TRUE, multithread=TRUE)
+taxa <- assignTaxonomy(st, tax.db, tryRC = TRUE, multithread = TRUE,
+    verbose = TRUE)
 # Add species
-taxa <- addSpecies(taxa, species.db, tryRC = TRUE, allowMultiple=TRUE)
+taxa <- addSpecies(taxa, species.db, tryRC = TRUE, allowMultiple=TRUE,
+    verbose = TRUE)
 saveRDS(taxa, file.path(data.path, 
-        paste0(Sys.Date(), "taxonomy.Rds", sep="_")))
+        paste(Sys.Date(), "taxonomy.Rds", sep="_")))
 # Also save species assignment for later inspection
-spec <- assignSpecies(st, species.db, tryRC = TRUE, allowMultiple=TRUE)
+spec <- assignSpecies(st, species.db, tryRC = TRUE, allowMultiple = TRUE,
+    verbose = TRUE)
 saveRDS(spec, file.path(data.path, 
-        paste0(Sys.Date(), "species.Rds", sep="_")))
+        paste(Sys.Date(), "species.Rds", sep="_")))
