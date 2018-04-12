@@ -6,6 +6,8 @@ library(dada2); packageVersion("dada2")
 data.path <- "~/data/mbqc/blinded_sequence_data/dada_out/"
 # Path for silva training data
 silva.path <- '~/data/silva/dada2_format'
+
+## Species database
 species.db <- file.path(silva.path, "silva_species_assignment_v132.fa.gz")
 
 ## Load sequence table

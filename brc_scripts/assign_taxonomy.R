@@ -8,6 +8,8 @@ library(dada2); packageVersion("dada2")
 data.path <- "~/data/mbqc/blinded_sequence_data/dada_out/"
 # Path for silva training data
 silva.path <- '~/data/silva/dada2_format'
+
+## Taxonomy databases
 tax.db <- file.path(silva.path, "silva_nr_v132_train_set.fa.gz")
 species.db <- file.path(silva.path, "silva_species_assignment_v132.fa.gz")
 
@@ -16,7 +18,7 @@ st <- readRDS(file.path(data.path, "seqtab_all_nochim.Rds"))
 
 ## Assign taxonomy
 # Assign tax up to Genus
-taxa <- assignTaxonomy(st, file.path(silva.path, tax.db), multithread=TRUE)
+taxa <- assignTaxonomy(st, tax.db, multithread=TRUE)
 # Add species
 taxa <- addSpecies(taxa, species.db, allowMultiple=TRUE)
 saveRDS(taxa, file.path(data.path, 
