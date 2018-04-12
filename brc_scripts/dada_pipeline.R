@@ -34,7 +34,7 @@ F318 <- "ACTCCTACGGGAGGCAGCAG"
 F515_HLC <- "GTGTGCCAGCMGCCGCGGTAA"
             
 ## Get the sample names (Bioinformatics.ID) into a dataframe
-sd.all <- readRDS(file.path(mc.path, 'mbqc/data/', 'mbqc_sample_data.rds'))
+sd.all <- readRDS(file.path(mc.path, 'mbqc/data/', 'mbqc_sample_data.Rds'))
 df <- subset_samples(sd.all, sequencing_wetlab != 'HL-A')
 df <- unique(df[, c('Bioinformatics.ID', 'sequencing_wetlab')])
 target.length = 10
@@ -103,8 +103,8 @@ set.seed(1)
 print(system.time(errR <- learnErrors(derepRs, multithread=TRUE, randomize=TRUE)))
 ## Save the error profiles
 print(paste('Saving error profiles to', file.path(data.path, 'dada_out')))
-saveRDS(errF, file.path(data.path, 'dada_out', paste0('errF_', lab, '.rds')))
-saveRDS(errR, file.path(data.path, 'dada_out', paste0('errR_', lab, '.rds')))
+saveRDS(errF, file.path(data.path, 'dada_out', paste0('errF_', lab, '.Rds')))
+saveRDS(errR, file.path(data.path, 'dada_out', paste0('errR_', lab, '.Rds')))
 ## Run dada2
 print('Running dada')
 print(system.time(dadaFs <- dada(derepFs, err=errF, pool=TRUE, multithread=TRUE)))
@@ -143,7 +143,7 @@ print(head(track))
 ## Save objects
 print(paste('Saving objects to', file.path(data.path, 'dada_out')))
 saveRDS(seqtab, file.path(data.path, 'dada_out', 
-                          paste0('seqtab_', lab, '.rds')))
+                          paste0('seqtab_', lab, '.Rds')))
 saveRDS(seqtab.nochim, file.path(data.path, 'dada_out',
-                                 paste0('seqtab_nochim_', lab, '.rds')))
-saveRDS(track, file.path(data.path, 'dada_out', paste0('track_', lab, '.rds')))
+                                 paste0('seqtab_nochim_', lab, '.Rds')))
+saveRDS(track, file.path(data.path, 'dada_out', paste0('track_', lab, '.Rds')))
