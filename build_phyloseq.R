@@ -1,13 +1,14 @@
 # Load packages
 library(phyloseq)
+library(stringr)
 
 #### Build a core-ASV phyloseq object
-data.path <- "~/active_research/metagenomics_calibration/mbqc/data"
+data_path <- "~/active_research/metagenomics_calibration/mbqc/data"
 
 # Load data and build new phyloseq object
-sampledata <- readRDS(file.path(data.path, 'brc_dada_out', "sample_data.Rds"))
-seqtab <- readRDS(file.path(data.path, 'brc_dada_out', "seqtab_all_nochim.Rds"))
-tax <- readRDS(file.path(data.path, 'brc_dada_out', "2018-04-12_taxonomy.Rds"))
+sampledata <- readRDS(file.path(data_path, 'brc_dada_out', "sample_data.Rds"))
+seqtab <- readRDS(file.path(data_path, 'brc_dada_out', "seqtab_all_nochim.Rds"))
+tax <- readRDS(file.path(data_path, 'brc_dada_out', "2018-04-12_taxonomy.Rds"))
 
 ps <- phyloseq(otu_table(seqtab, taxa_are_rows = FALSE),
     sample_data(sampledata), tax_table(tax))
@@ -35,6 +36,26 @@ table(tax_table(ps0)[,'Kingdom'])
 all(with(data.frame(tax_table(ps0)),
         !is.na(Phylum) & !Phylum %in% c("", "uncharacterized")))
 
+## Sample data processing
+ps <- ps0
+remove(ps0)
+# Add prefix to sample names to avoid phyloseq bug
+sample_names(ps) <- paste0('s', sample_data(ps)$Bioinformatics.ID)
+## Tweak sample data
+# Remap extraction_wetlab=NA to 'central' for pre-extracted samples
+sam <- sample_data(ps)
+sam$extraction_wetlab[sam$pre.extracted_bool=="TRUE"] <- "Central"
+# Add the extraction + sequencing pair as a field. Consists of a two-letter
+# string, with 'pJ' for example denoting pre-extraction and sequencing in lab J.
+# Negative controls are set to NA
+sam$lab_pair <- with(sam, paste0(
+        ifelse(pre.extracted_bool, 'p', str_sub(extraction_wetlab, -1)),
+        str_sub(sequencing_wetlab, -1)))
+sam$lab_pair[is.na(sam$extraction_wetlab)] <- NA
+# Simplified versions of the lab names to use when plotting
+sam$extr <- str_sub(sam$lab_pair, 1, 1)
+sam$seq <- str_sub(sam$lab_pair, -1)
+sample_data(ps) <- sam
+
 ## Save the filtered ps object, as this is what we will work with for now
-saveRDS(ps0, file.path(data.path, 'mbqc_core_phyloseq.Rds'))
-remove(ps, ps0)
+saveRDS(ps, file.path(data_path, 'mbqc_core_phyloseq.Rds'))
