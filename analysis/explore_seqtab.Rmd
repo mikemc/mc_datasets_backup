@@ -89,7 +89,59 @@ ps
 sample_sums(ps)
 ```
 
-## Subset to the mock community taxa
+# Phylogeny
+
+The tree I'm using is from the `curatedMetagenomicData` package and was
+downloaded from
+[https://github.com/waldronlab/curatedMetagenomicData/blob/master/inst/extdata/metaphlan2_selected.tree.reroot.nwk.bz2]
+<!-- https://groups.google.com/forum/#!msg/metaphlan-users/qEIqLrI37g4/uwFtVeFmAgAJ -->
+
+```{r}
+tree <- read_tree(file.path(data_path, "metaphlan2_selected.tree.reroot.nwk"))
+# Simplify the species names
+tree_species <- tree$tip.label %>% 
+    str_match(".*s__(.+)\\|.*") %>% 
+    {.[,2]}
+# But note there are two tips that didn't have species names
+idx <- tree_species %>% is.na %>% which
+tree$tip.label[idx]
+# So let's prune these
+tree0 <- tree
+tree0 <- ape::drop.tip(tree0, idx)
+tree_species <- tree0$tip.label %>% 
+    str_match(".*s__(.+)\\|.*") %>% 
+    {.[,2]}
+tree0$tip.label <- tree_species
+
+# Some of these species from the ps are in the tree but just with simpler names:
+setdiff(taxa_names(ps), tree_species)
+taxa <- taxa_names(ps)
+taxa %>% str_subset("Streptococcus_mitis")
+tree_species %>% str_subset("Streptococcus_mitis")
+taxa %>% str_subset("Lactobacillus_casei")
+tree_species %>% str_subset("Lactobacillus_casei")
+# Other missing taxa are viral and "unclassified"
+```
+
+I can manually rename the few mismatched names (or automatically by matching
+Genus_species), and when merging, phyloseq will remove the viruses and
+"unclassified" taxa. I may want to also do some analyses with the unclassified
+taxa such as comparing bias of of the "unclassified" with classified species
+within a genus.
+
+```{r}
+tree_species0 <- tree_species %>% 
+    replace(., . == "Streptococcus_mitis",
+        "Streptococcus_mitis_oralis_pneumoniae") %>%
+    replace(., . == "Lactobacillus_casei", "Lactobacillus_casei_paracasei")
+setdiff(taxa_names(ps), tree_species0)
+tree0$tip.label <- tree_species0
+
+ps_tree <- merge_phyloseq(ps, tree0)
+# saveRDS(ps_tree, file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
+```
+
+# Mock community spike-in
 
 ```{r}
 ps_mock_only <- subset_samples(ps, Individual == "Mock-only") %>%
@@ -144,7 +196,7 @@ this.
 
 ## Visualization
 
-There are a few zeros we need to deeal with before clr'ing for the PCA. Let's
+There are a few zeros we need to deal with before clr'ing for the PCA. Let's
 see what they are:
 ```{r}
 st <- ps0 %>% otu_table
