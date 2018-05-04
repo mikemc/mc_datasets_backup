@@ -1,0 +1,232 @@
+---
+title: "Pool bias estimates across individuals"
+output:
+  html_document:
+    toc: true
+    toc_float: false
+    code_folding: show
+    self_contained: true
+---
+
+# Setup
+
+```{r package_options, include=FALSE, cache=FALSE}
+# 
+knitr::opts_knit$set(progress=TRUE, verbose=TRUE)
+# Global chunk options
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE, echo=TRUE, warning=FALSE,
+    message=FALSE, fig.width=10, fig.height=8, include=TRUE)
+# R options
+options(width=100)
+# options(digits=2)
+```
+
+```{r load_packages, include=T, cache=F}
+library(phyloseq)
+library(stringr)
+library(tidyverse)
+library(widyr)
+library(magrittr)
+
+## Source bias estimation functions
+devtools::load_all("~/active_research/src/metacal")
+
+## Avoid confusing behavior from factor conversion
+options(stringsAsFactors = FALSE)
+```
+
+```{r load_data}
+git_path <- file.path("~/active_research/metagenomics_calibration")
+data_path <- file.path(git_path, "costea2017", "data")
+ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
+# Get rid of the samples of Individual = A or B b/c these were only extracted
+# by one protocol
+ps <- subset_samples(ps, !(Individual %in% c("A", "B")))
+```
+
+# Get biases within each individual
+
+For calculating biases, we want to take a log-ratio transform with the mock
+taxa as the denominator. We'll exclude Blautia hansenii from the denominator
+due to the presence of zero counts in several samples.
+```{r}
+mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
+    "Clostridium_perfringens", "Clostridium_saccharolyticum",
+    "Fusobacterium_nucleatum", "Lactobacillus_plantarum",
+    "Prevotella_melaninogenica", "Salmonella_enterica",
+    "Vibrio_cholerae", "Yersinia_pseudotuberculosis")
+denom <- setdiff(mock_taxa, "Blautia_hansenii")
+ps.lr <- ps %>% 
+    transform_sample_counts(clr, denom = denom)
+```
+
+Somehow, we'll have to deal with all the zeros---a fraction 
+`r mean(otu_table(ps) == 0)` of all abundances in the table.
+Let's get a table of the number of taxa with a given prevalance (ranging from
+0 to 3) within the three samples of each Individual.
+```{r}
+tb <- ps %>% as_tibble
+taxa <- taxa_names(ps)
+tb0 <- tb %>%
+    gather(key = "Taxon", value = "RA", taxa)
+tb1 <- tb0 %>% group_by(Individual, Taxon) %>%
+    summarize(Prev = sum(RA>0))
+tb2 <- tb1 %>%
+    summarize(P0 = sum(Prev==0), P1 = sum(Prev==1),
+        P2 = sum(Prev==2), P3 = sum(Prev==3)) 
+print(tb2)
+```
+Thus, for each individual there are a large number of taxa that are found by
+all three protocols, and most taxa within an individual are found by all three.
+
+Since there are no technical replicates, we can deal with zeros simply by
+throwing out all infinite biases at the end. Although I should consider if that
+might bias our results.
+
+
+```{r}
+# st <- otu_table(ps.lr) %>% t %>% as_tibble
+# sam <- sample_table(ps.lr) %>% t %>% as_tibble
+```
+
+Estimate biases relative to protocol W. Do so by calculating for each
+Individual, and then for each taxon, take the median of the biases seen across
+individuals (dropping NA's, which correspond to absence in protocol W for that
+individual).
+```{r}
+tb <- ps.lr %>% as_tibble
+# Get the biases as the diff from W
+tb0 <- tb %>%
+    select(Individual, Protocol, taxa) %>%
+    gather(key = "Taxon", value = "LR", taxa) %>%
+    spread(key = Protocol, value = "LR") %>%
+    mutate(BiasHW = H - W, BiasQW = Q - W)
+# NOTE: this tibble (tb0) will be useful for examining consistency
+# Filter rows where biases are NA. Should only happen b/c species not found by
+# Q protocol.
+tb1 <- tb0 %>% filter(!(is.na(BiasHW) | is.na(BiasQW)))
+biases <- tb1 %>%
+    group_by(Taxon) %>%
+    summarize(BiasHW = median(BiasHW, na.rm=TRUE), 
+        BiasQW = median(BiasQW, na.rm=TRUE))
+```
+
+```{r}
+```
+
+# Is bias consistent across individuals?
+
+
+# Bias versus phylogeny
+
+## Difference in bias versus phylogenetic distance
+
+```{r}
+tree <- phy_tree(ps) %>% prune_taxa(biases$Taxon, .)
+phyd <- ape::cophenetic.phylo(tree) %>% 
+    as.dist(diag = FALSE, upper = FALSE) %>%
+    {broom::tidy(.)} %>% 
+    as_tibble %>%
+    rename(Taxon1 = item1, Taxon2 = item2,
+        Phy_dist = distance)
+# summary(phyd$distance)
+# bias_vector <- biases$BiasHW
+# names(bias_vector) <- biases$Taxon
+# bd <- dist(bias_vector, diag = TRUE, upper = TRUE) %>%
+#     {broom::tidy(.)} %>% 
+#     as_tibble
+phyd0 <- phyd %>%
+    left_join(select(biases, Taxon1 = Taxon, Bias1 = BiasHW), by = "Taxon1") %>%
+    left_join(select(biases, Taxon2 = Taxon, Bias2 = BiasHW), by = "Taxon2") %>%
+    mutate(Bias_dist = abs(Bias1 - Bias2))
+```
+
+```{r}
+phyd1 <- phyd0 %>%
+    filter(Phy_dist < 2)
+ggplot(phyd1, aes(x = Phy_dist, y = Bias_dist)) +
+    geom_jitter()
+```
+
+__TODO:__ redo this with bounded biases
+
+Other things could ask:
+* are most closely related pairs more similar bias-wise than random pairs.
+<!--  -->
+
+## Bias trees
+
+```{r}
+library(ggtree)
+library(tidytree)
+
+tree <- phy_tree(ps) %>% prune_taxa(biases$Taxon, .)
+biases <- biases %>%
+    mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
+ttree <- tidytree::as_data_frame(tree) %>%
+    left_join(rename(biases, label = Taxon), by = "label")
+
+# This fails; possibly a bug
+# ttree0 <- ttree %>%
+#     mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
+# td <- as.treedata(ttree0)
+```
+
+```{r, eval=F}
+qplot(biases$BiasHW)
+```
+
+```{r}
+td <- as.treedata(ttree)
+gt <- ggtree(td, layout = "circular")
+
+med <- median(ttree$bBiasHW, na.rm=TRUE)
+gt + geom_tippoint(aes(fill = bBiasHW), shape=21, color="black", size = 3.5) +
+    scale_fill_gradient2(midpoint = med, 
+        low="red", mid="white", high="blue") +
+    theme(legend.position='right')
+
+med <- median(ttree$bBiasQW, na.rm=TRUE)
+gt + geom_tippoint(aes(fill = bBiasQW), shape=21, color="black", size = 3.5) +
+    scale_fill_gradient2(midpoint = med, 
+        low="red", mid="white", high="blue") +
+    theme(legend.position='right')
+```
+
+### Investigating outliers
+
+Let's look at just Bacteroides.
+```{r, eval=F}
+# ttree0 <- ttree %>%
+#     full_join(tax_table(ps) %>% as_tibble %>% rename(label = Taxon), by = "label")
+bacteroides_species <- taxa_names(ps) %>%
+    str_subset("Bacteroides.*")
+ps0 <- prune_taxa(bacteroides_species, ps)
+tree <- phy_tree(ps0) %>% prune_taxa(biases$Taxon, .)
+biases <- biases %>%
+    mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
+ttree <- tidytree::as_data_frame(tree) %>%
+    left_join(rename(biases, label = Taxon), by = "label")
+td <- as.treedata(ttree)
+gt <- ggtree(td, layout = "rectangular")
+med <- median(ttree$bBiasHW, na.rm=TRUE)
+gt + geom_tippoint(aes(fill = bBiasHW), shape=21, color="black", size = 3.5) +
+    scale_fill_gradient2(midpoint = med, 
+        low="red", mid="white", high="blue") + geom_tiplab() + 
+    theme(legend.position = 'right')
+```
+
+The outlier is a case of a negative infinite bias result that was set to the
+lower bound. `Bacteroides_plebeius`
+```{r}
+biases %>% filter(Taxon %in% bacteroides_species) %>% print(n = 24)
+# 16 Bacteroides_plebeius         -Inf       2.68   -4.98    2.68
+```
+
+```{r}
+tb1 %>% filter(Taxon %in% "Bacteroides_plebeius")
+```
+From this, we can see that the inference of a negative bias is probably
+incorrect. In the two cases where it was found by protocol H, the bias was in
+fact positive. But since detection was less likely in H, than W, we end up with
+more `-Inf`'s which lead to a median of `-Inf`.
