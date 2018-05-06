@@ -32,7 +32,6 @@ devtools::load_all("~/active_research/src/metacal")
 
 ## Avoid confusing behavior from factor conversion
 options(stringsAsFactors = FALSE)
-
 ```
 
 ```{r set_paths}
@@ -291,8 +290,88 @@ ggplot(tb3, aes(Calibrated, Distance)) +
     facet_wrap(~Group1)
 ```
 
-### PCA before/after
+### Ordinations
 
+Get a combined phyloseq with calibrated and uncalibrated samples and the truth
+```{r}
+# ps1_eval_merged <- merge_phyloseq(ps1_eval_clr, ps1_eval_clr_cal, 
+ps2 <- ps1_eval_clr
+ps2_cal <- ps1_eval_clr_cal
+sample_names(ps2_cal) <- sample_names(ps2_cal) %>% paste0(".cal")
+sample_data(ps2)$Calibrated <- "No"
+sample_data(ps2_cal)$Calibrated <- "Yes"
+sample_data(ps_truth_clr)$Calibrated <- "Truth"
+ps2_all <- merge_phyloseq(ps2, ps2_cal, ps_truth_clr)
+```
+
+NMDS:
+```{r}
+ord <- ordinate(ps2_all, "NMDS", "euclidean")
+```
+```{r, fig.height = 6, fig.width = 8}
+p <- plot_ordination(ps2_all, ord, type="samples", color="Protocol", 
+    shape = "Calibrated")
+ggplot(p$data, aes(x = NMDS1, y = NMDS2, 
+        color = Calibrated, label = Protocol)) +
+    geom_text()
+```
+
+PCA:
+```{r, fig.height = 6, fig.width = 8}
+p <- plot_pca(ps2_all)
+ggplot(p$data, aes(x = PC1, y = PC2, 
+        color = Calibrated, label = Protocol)) +
+    geom_text() + 
+    labs(p$labels[1:2])
+```
+
+```{r, fig.height = 4, fig.width = 10}
+ggplot(p$data, aes(x = PC1, y = PC2, 
+        color = Calibrated, label = Protocol)) +
+    geom_text() + 
+    labs(p$labels[1:2]) + 
+    coord_fixed(2 * 12.7 / 76.2)
+```
+
+### Estimate of C. difficile absolute abundance
+
+Calibration allows us to improve our estimates of pathogen abundance. Here,
+I am using the most abundant of the mock community as a "spike-in" that is used
+to obtain absolute abundance estimates of a pathogen, C. difficile. Note that
+uncalibrated estimates systematically underestimate the abundance of C.
+difficile; the calibrated estimates are much more accurate.
+
+```{r}
+# Get the relative abundances:
+ps1_eval_cal <- transform_sample_counts(ps1_eval_clr_cal, 
+    function (x) {x <- 2**x; x / sum(x)})
+# Estimate absolute abundances by treating Prevotella as the only spike-in
+spikein <- "Prevotella_melaninogenica"
+spikein_density <- truth %>% filter(Species == spikein) %$% 2**Log2_density
+# get the AAs 
+ps1_eval_aa <- ps1_eval %>%
+    transform_sample_counts(function (x) {x * spikein_density / x[spikein]})
+ps1_eval_cal_aa <- ps1_eval_cal %>%
+    transform_sample_counts(function (x) {x * spikein_density / x[spikein]})
+```
+
+```{r}
+tb <- list(ps1_eval_aa, ps1_eval_cal_aa) %>% 
+    map(as_tibble) %>%
+    bind_rows(.id = "Calibrated") %>%
+    mutate(Calibrated = map_chr(Calibrated, switch, "1" = "No", "2" = "Yes"))
+```
+
+```{r, fig.height = 4, fig.width = 6}
+cdiff_density <- truth %>% filter(Species == "Clostridium_difficile") %$%
+    2**Log2_density
+ggplot(tb, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) +
+    geom_vline(xintercept = cdiff_density, color = "grey") +
+    geom_jitter(height = 0.1, width = 0) +
+    scale_x_log10()
+```
+
+## Calibration relative to the ground truth using the mock-only sample
 
 ## Calibration relative to protocol W
 
