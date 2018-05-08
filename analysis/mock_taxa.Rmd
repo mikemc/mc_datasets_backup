@@ -11,7 +11,6 @@ output:
 # Setup
 
 ```{r package_options, include=FALSE, cache=FALSE}
-# 
 knitr::opts_knit$set(progress=TRUE, verbose=TRUE)
 # Global chunk options
 knitr::opts_chunk$set(cache=TRUE, autodep=TRUE, echo=TRUE, warning=FALSE,
@@ -23,7 +22,6 @@ options(width=100)
 
 ```{r load_packages, include=T, cache=F}
 library(phyloseq)
-library(stringr)
 library(tidyverse)
 library(magrittr)
 
@@ -43,9 +41,21 @@ metadata_path <- file.path(git_path, "costea2017", "metadata")
 Phyloseq object with the species abundance table for Phase 3 samples:
 ```{r load_data}
 ps <- readRDS(file.path(data_path, "phase3_phyloseq.Rds"))
+ps
 ```
-
-Subset to the mock community taxa:
+We are going to subset to the mock taxa only. There are a few zero counts in
+the rare taxon `Blautia_hansenii`. To deal with these I will add pseudocounts
+to each taxon, equal to the minimal observed abundance in that sample.
+```{r}
+ps_nonzero <- ps %>% 
+    transform_sample_counts(
+        function (x) {
+            min_nonzero <- min(x[x>0])
+            x <- x + min_nonzero
+            x / sum(x)
+        })
+```
+Now we subset to the mock community taxa:
 ```{r}
 mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
     "Clostridium_perfringens", "Clostridium_saccharolyticum",
@@ -56,36 +66,34 @@ phage <- "Salmonella_phage_Fels_1"
 ps0 <- prune_taxa(mock_taxa, ps)
 ps0
 (sample_sums(ps0) / sample_sums(ps)) %>% sort
+# And a version with no zeros:
+ps1 <- prune_taxa(mock_taxa, ps_nonzero)
 ```
-
-It is also useful to have a version with no zeros. For now, I will use the
-somewhat crude method of adding a pseudo-abundance equal to the minimally
-inferred abundance across all species and samples.
-```{r}
-min_ra <- ps0 %>% otu_table %>% c %>% {min(.[.>0])}
-ps1 <- ps0 %>% 
-    transform_sample_counts(function (x) {x <- x + min_ra; x / sum(x)})
-```
+Note the large variation in the proportion of the sample made up by the
+spike-in.
 
 Expected mock community composition:
 ```{r}
 mdf <- readxl::read_xlsx(file.path(metadata_path,
         "composition_of_mock_community.xlsx"), sheet=1)
-mdf <- mdf %>% rename(Species = `Bacterial species`) %>%
-    mutate(Species = str_extract(Species, "\\S+ \\S+"),
-        Species = str_replace(Species, " ", "_"))
+mdf <- mdf %>% rename(Taxon = `Bacterial species`) %>%
+    mutate(Taxon = str_extract(Taxon, "\\S+ \\S+"),
+        Taxon = str_replace(Taxon, " ", "_"))
 # I'm not sure what the "ground truth" is; for now, take as
 # "bacterial cells in spike in Mix"
 mdf0 <- mdf %>%
-    select(Species, Cell_density = "bacterial cells in spike in Mix")
+    select(Taxon, Cell_density = "bacterial cells in spike in Mix")
 # Take the average of the log density as the estimated "truth" for the species
 # where there are two measurements
 mock_comp <- mdf0 %>%
     mutate(Log2_density = log2(Cell_density)) %>%
-    group_by(Species) %>%
+    group_by(Taxon) %>%
     summarize(Log2_density = mean(Log2_density))
+# Compute the CLR
+mock_comp <- mock_comp %>%
+    mutate(CLR = Log2_density - mean(Log2_density))
 # Verify species names match
-setequal(taxa_names(ps0), mock_comp$Species)
+setequal(taxa_names(ps0), mock_comp$Taxon)
 ```
 
 # Pairwise biases
@@ -119,7 +127,7 @@ Calculate the pairwise ratios relative to the "ground truth".
 mat <- matrix(data = rep(2**mock_comp$Log2_density, nsamples(ps0)),
     nrow = nsamples(ps0), byrow = TRUE)
 rownames(mat) <- sample_names(ps0)
-colnames(mat) <- mock_comp$Species
+colnames(mat) <- mock_comp$Taxon
 # Get the taxa in the right order:
 mat <- mat[, taxa_names(ps0)]
 mock_mat <- mat
@@ -181,24 +189,33 @@ ggplot(tb,
     # coord_cartesian(clip = "off")
 ```
 
-Another way to look at this, which includes info about variation in expected
+Another way to see this information along with the variation in expected
 frequency:
 ```{r}
 tb <- observed %>% as_tibble(rownames = "Sample") %>%
     left_join(sam, ., by = "Sample") %>%
     gather(key = "Taxon", value = "CLR", taxa_names(ps1)) %>%
     mutate(Individual = ifelse(Individual == "Mock-only", "M", Individual))
-truth <- mock_comp %>%
-    mutate(CLR = Log2_density - mean(Log2_density))
+species_ordered <- mock_comp %>%
+    arrange(desc(CLR)) %$%
+    Taxon
+```
+
+```{r}
 ggplot(tb, 
-    aes(x = Taxon, y = CLR, color = Protocol, label = Individual)) + 
-    geom_text(position = position_jitter(width=0.25, height=0)) +
-    geom_point(data = truth, mapping = aes(x = Species, y = CLR),
+    aes(x = factor(Taxon, species_ordered), y = CLR, color = Protocol, 
+        label = Individual)) + 
+    geom_point(data = mock_comp, 
+        mapping = aes(x = factor(Taxon, species_ordered), y = CLR), 
         color = "black", shape = 3, size = 5, inherit.aes = FALSE) +
+    geom_text(position = position_jitter(width=0.25, height=0)) +
     ylab("CLR") +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         axis.title.x = element_blank())
 ```
+
+For the poster, I should change the y-axes to be in terms of the ratio rather
+than the log.
 
 # Calibration
 
@@ -231,12 +248,12 @@ tb0 <- tb %>% group_by(Protocol) %>%
     summarize_at(taxa, median)
 # Get the biases as the diff from truth
 tb1 <- tb0 %>%
-    gather(key = "Species", value = "CLR", taxa) %>%
-    left_join(truth, by = "Species", suffix = c("", "_true")) %>%
+    gather(key = "Taxon", value = "CLR", taxa) %>%
+    left_join(mock_comp, by = "Taxon", suffix = c("", "_true")) %>%
     mutate(Bias = CLR - CLR_true)
 # Format for my calibration functions
 biases <- tb1 %>%
-    select(Taxon = Species, Protocol, Bias) %>%
+    select(Taxon, Protocol, Bias) %>%
     spread(key = Protocol, value = Bias)
 bias_mat <- biases %>% select(-Taxon) %>% as("matrix")
 rownames(bias_mat) <- biases$Taxon
@@ -250,8 +267,8 @@ ps1_eval_clr_cal <- calibrate_clr(ps1_eval_clr, "Protocol", bias_mat)
 Objects for computing distances
 ```{r}
 # Add the truth
-st_truth <- truth %>% select(CLR) %>% as("matrix") %>% t
-colnames(st_truth) <- truth$Species
+st_truth <- mock_comp %>% select(CLR) %>% as("matrix") %>% t
+colnames(st_truth) <- mock_comp$Taxon
 rownames(st_truth) <- "Truth"
 st_truth <- otu_table(st_truth, taxa_are_rows = FALSE)
 sam_truth <- data.frame(Protocol = "Truth", Phase = 3,
@@ -333,6 +350,45 @@ ggplot(p$data, aes(x = PC1, y = PC2,
     coord_fixed(2 * 12.7 / 76.2)
 ```
 
+### Bar plots
+
+```{r}
+ps2_all_ra <- ps2_all %>%
+    transform_sample_counts(function (x) {
+        y <- 2**x
+        y / sum(y)
+    })
+p <- plot_bar(ps2_all_ra)
+pd <- p$data %>% as_tibble %>%
+    rename(Taxon = OTU) %>%
+    select(-Lab) %>%
+    mutate(Taxon = factor(Taxon, species_ordered))
+```
+
+Let's first try just the Q samples.
+```{r}
+pd0 <- pd %>%
+    filter(Protocol %in% c('Q', 'Truth'))
+ggplot(pd0, aes(x = Sample, y = Abundance, fill = Taxon)) +
+    geom_bar(stat = "identity") +
+    facet_grid(. ~ Calibrated, 
+        scales = "free", space = "free", shrink = TRUE)
+ggplot(pd0, aes(x = Sample, y = Abundance, fill = Taxon)) +
+    geom_bar(stat = "identity") +
+    facet_grid(. ~ Calibrated, 
+        scales = "free", space = "free", shrink = TRUE) +
+    scale_y_log10()
+```
+
+```{r, eval=F}
+# For plotting: Remove Truth as a protocol, but keep as a calibration status;
+# give a copy for each protocol
+ggplot(pd, aes(x = Sample, y = Abundance, fill = Taxon)) +
+    geom_bar(stat = "identity") +
+    facet_grid(. ~ Protocol, 
+        scales = "free", space = "free", shrink = TRUE)
+```
+
 ### Estimate of C. difficile absolute abundance
 
 Calibration allows us to improve our estimates of pathogen abundance. Here,
@@ -347,7 +403,7 @@ ps1_eval_cal <- transform_sample_counts(ps1_eval_clr_cal,
     function (x) {x <- 2**x; x / sum(x)})
 # Estimate absolute abundances by treating Prevotella as the only spike-in
 spikein <- "Prevotella_melaninogenica"
-spikein_density <- truth %>% filter(Species == spikein) %$% 2**Log2_density
+spikein_density <- mock_comp %>% filter(Taxon == spikein) %$% 2**Log2_density
 # get the AAs 
 ps1_eval_aa <- ps1_eval %>%
     transform_sample_counts(function (x) {x * spikein_density / x[spikein]})
@@ -356,16 +412,16 @@ ps1_eval_cal_aa <- ps1_eval_cal %>%
 ```
 
 ```{r}
-tb <- list(ps1_eval_aa, ps1_eval_cal_aa) %>% 
+aa_tb <- list(ps1_eval_aa, ps1_eval_cal_aa) %>% 
     map(as_tibble) %>%
     bind_rows(.id = "Calibrated") %>%
     mutate(Calibrated = map_chr(Calibrated, switch, "1" = "No", "2" = "Yes"))
 ```
 
 ```{r, fig.height = 4, fig.width = 6}
-cdiff_density <- truth %>% filter(Species == "Clostridium_difficile") %$%
+cdiff_density <- mock_comp %>% filter(Taxon == "Clostridium_difficile") %$%
     2**Log2_density
-ggplot(tb, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) +
+ggplot(aa_tb, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) +
     geom_vline(xintercept = cdiff_density, color = "grey") +
     geom_jitter(height = 0.1, width = 0) +
     scale_x_log10()
