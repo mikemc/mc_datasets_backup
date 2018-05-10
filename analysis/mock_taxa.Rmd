@@ -41,6 +41,12 @@ metadata_path <- file.path(git_path, "costea2017", "metadata")
 Phyloseq object with the species abundance table for Phase 3 samples:
 ```{r load_data}
 ps <- readRDS(file.path(data_path, "phase3_phyloseq.Rds"))
+sample_data(ps) <- sample_data(ps) %>% 
+sample_data(ps) %>% 
+    subset(select = -Lab) %>%
+    within(Individual <- ifelse(Individual == "Mock-only", "M", Individual))
+# Optionally, remove the extra two samples for the Q protocol
+ps <- subset_samples(ps, !(Individual %in% c("A", "B")))
 ps
 ```
 We are going to subset to the mock taxa only. There are a few zero counts in
@@ -94,6 +100,70 @@ mock_comp <- mock_comp %>%
     mutate(CLR = Log2_density - mean(Log2_density))
 # Verify species names match
 setequal(taxa_names(ps0), mock_comp$Taxon)
+# Phyloseq object with the truth
+st.truth <- mock_comp %>% select(CLR) %>% as("matrix") %>% t
+colnames(st.truth) <- mock_comp$Taxon
+rownames(st.truth) <- "Truth"
+st.truth <- otu_table(st.truth, taxa_are_rows = FALSE)
+sam.truth <- data.frame(Protocol = "Truth", Phase = 3, row.names = "Truth") %>%
+    sample_data
+ps.truth.clr <- phyloseq(st.truth, sam.truth)
+```
+
+# Exploration
+
+
+```{r, fig.height = 6, fig.width = 8}
+ps1.clr <- ps1 %>% transform_sample_counts(clr, denom = "all")
+p <- merge_phyloseq(ps1.clr, ps.truth.clr) %>%
+    plot_pca
+pd <- p$data %>%
+    filter(Sample != "Truth")
+truth <- p$data %>% 
+    filter(Sample == "Truth")
+ggplot(pd, aes(x = PC1, y = PC2, 
+        color = Protocol, label = Individual)) +
+    geom_text() +
+    geom_point(data = truth, 
+        aes(PC1, PC2),
+        shape = 3, size = 4, inherit.aes = FALSE) + 
+    labs(p$labels[1:2])
+```
+
+```{r, eval=F}
+pcx <- merge_phyloseq(ps1.clr, ps.truth.clr) %>%
+    otu_table %>%
+    prcomp
+biplot(pcx, scale = 1)
+biplot(pcx, scale = 0)
+```
+
+Plot of species' abundance (as centered ratios) along with the expected values,
+as in Costea2017 figure 6:
+```{r}
+# Order by expected abundance
+species_ordered <- mock_comp %>%
+    arrange(desc(CLR)) %$%
+    Taxon
+tb.clr <- ps1.clr %>% as_tibble %>%
+    gather(key = "Taxon", value = "CLR", taxa_names(ps1.clr)) %>%
+    mutate(Taxon = factor(Taxon, species_ordered))
+# Points for step function of true abundances
+lvls <- tb.clr$Taxon %>% levels
+tb.step <- tibble(x = seq(0.5, 10.5, by = 0.5)) %>%
+    mutate(x_int = pmin(floor(x + 0.5), 10),
+        Taxon = lvls[x_int]) %>%
+    left_join(mock_comp, by = "Taxon")
+# The plot! note, doesn't work if I plot the geom_step before the text/points
+ggplot(tb.clr, aes(x = Taxon, y = 2^CLR)) + 
+    # geom_jitter(aes(x = Taxon, y = 2^CLR)) +
+    geom_text(aes(x = Taxon, y = 2^CLR, color = Protocol, label = Individual), 
+        position = position_jitter(width=0.25, height=0)) +
+    geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
+    ylab("Abundance / geometric mean") +
+    scale_y_log10(limits = c(1e-3, 1e2)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.x = element_blank())
 ```
 
 # Pairwise biases
@@ -107,8 +177,7 @@ ratios_tb <- ratios %>%
 sam <- sample_data(ps0) %>% as_tibble
 tb <- left_join(sam, ratios_tb, by = "Sample")
 tb0 <- tb %>%
-    gather(key = "Pair", value = "Ratio", colnames(ratios)) %>%
-    mutate(Individual = ifelse(Individual == "Mock-only", "M", Individual))
+    gather(key = "Pair", value = "Ratio", colnames(ratios))
 ```
 
 Plot the ratios with labels corresponding to `Individual`:
@@ -146,8 +215,7 @@ tb <- ratios_to_truth %>%
     as_tibble(rownames = "Sample") %>%
     left_join(sam, ratios_tb, by = "Sample")
 tb0 <- tb %>%
-    gather(key = "Pair", value = "Ratio", colnames(ratios)) %>%
-    mutate(Individual = ifelse(Individual == "Mock-only", "M", Individual))
+    gather(key = "Pair", value = "Ratio", colnames(ratios))
 ggplot(tb0, 
     aes(x = Pair, y = log2(Ratio), color = Protocol, label = Individual)) + 
     geom_text(position = position_jitter(width=0.25, height=0)) +
@@ -175,11 +243,10 @@ clr_diff <- observed - expected
 ```
 
 ```{r}
-tb <- clr_diff %>% as_tibble(rownames = "Sample") %>%
+tb.diff <- clr_diff %>% as_tibble(rownames = "Sample") %>%
     left_join(sam, ., by = "Sample") %>%
-    gather(key = "Taxon", value = "Bias", taxa_names(ps1)) %>%
-    mutate(Individual = ifelse(Individual == "Mock-only", "M", Individual))
-ggplot(tb, 
+    gather(key = "Taxon", value = "Bias", taxa_names(ps1))
+ggplot(tb.diff, 
     aes(x = Taxon, y = Bias, color = Protocol, label = Individual)) + 
     geom_text(position = position_jitter(width=0.25, height=0)) +
     # geom_jitter(width=0.25, height=0) +
@@ -189,42 +256,14 @@ ggplot(tb,
     # coord_cartesian(clip = "off")
 ```
 
-Another way to see this information along with the variation in expected
-frequency:
-```{r}
-tb <- observed %>% as_tibble(rownames = "Sample") %>%
-    left_join(sam, ., by = "Sample") %>%
-    gather(key = "Taxon", value = "CLR", taxa_names(ps1)) %>%
-    mutate(Individual = ifelse(Individual == "Mock-only", "M", Individual))
-species_ordered <- mock_comp %>%
-    arrange(desc(CLR)) %$%
-    Taxon
-```
-
-```{r}
-ggplot(tb, 
-    aes(x = factor(Taxon, species_ordered), y = CLR, color = Protocol, 
-        label = Individual)) + 
-    geom_point(data = mock_comp, 
-        mapping = aes(x = factor(Taxon, species_ordered), y = CLR), 
-        color = "black", shape = 3, size = 5, inherit.aes = FALSE) +
-    geom_text(position = position_jitter(width=0.25, height=0)) +
-    ylab("CLR") +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-        axis.title.x = element_blank())
-```
-
-For the poster, I should change the y-axes to be in terms of the ratio rather
-than the log.
-
 # Calibration
 
 ## Calibration relative to the ground truth
 
 First, we'll pick samples for estimation and cross validation.
 ```{r}
-# Pick ind's for estimation and evaluatino
-set.seed(1)
+# Pick Individuals for estimation and evaluation
+set.seed(2)
 sam <- sample_data(ps1) %>% as_tibble
 individuals_est <- base::sample(1:8, 3, replace = FALSE) %>% as.character
 individuals_eval <- 1:8 %>% as.character %>% setdiff(individuals_est)
@@ -234,17 +273,20 @@ samples_est <- sam %>%
 samples_eval <- sam %>% 
     filter(Individual %in% individuals_eval) %$%
     Sample
-ps1_est <- ps1 %>% prune_samples(samples_est, .)
-ps1_eval <- ps1 %>% prune_samples(samples_eval, .)
+sample_data(ps1)[, "Set"] <- "Other"
+sample_data(ps1)[samples_est, "Set"] <- "Est"
+sample_data(ps1)[samples_eval, "Set"] <- "Eval"
 ```
 
 Estimate biases:
 ```{r}
+# (Re-generate ps1.clr to inherit the Set variable)
+ps1.clr <- ps1 %>% transform_sample_counts(clr, denom = "all")
 taxa <- taxa_names(ps1)
-ps1_est_clr <- ps1_est %>% transform_sample_counts(clr, denom = "all")
 # Calculate the median clr across individuals within a protocol
-tb <- ps1_est_clr %>% as_tibble
-tb0 <- tb %>% group_by(Protocol) %>%
+tb0 <- ps1.clr %>% as_tibble %>%
+    filter(Sample %in% samples_est) %>%
+    group_by(Protocol) %>%
     summarize_at(taxa, median)
 # Get the biases as the diff from truth
 tb1 <- tb0 %>%
@@ -258,40 +300,31 @@ biases <- tb1 %>%
 bias_mat <- biases %>% select(-Taxon) %>% as("matrix")
 rownames(bias_mat) <- biases$Taxon
 ```
-
+Calibrate the full set of samples.
 ```{r}
-ps1_eval_clr <- ps1_eval %>% transform_sample_counts(clr, denom = "all")
-ps1_eval_clr_cal <- calibrate_clr(ps1_eval_clr, "Protocol", bias_mat)
+ps1.clr.cal <- calibrate_clr(ps1.clr, "Protocol", bias_mat)
 ```
-
-Objects for computing distances
+Objects for computing distances:
 ```{r}
-# Add the truth
-st_truth <- mock_comp %>% select(CLR) %>% as("matrix") %>% t
-colnames(st_truth) <- mock_comp$Taxon
-rownames(st_truth) <- "Truth"
-st_truth <- otu_table(st_truth, taxa_are_rows = FALSE)
-sam_truth <- data.frame(Protocol = "Truth", Phase = 3,
-    row.names = "Truth") %>%
-    sample_data
-ps_truth_clr <- phyloseq(st_truth, sam_truth)
-ps_clr <- merge_phyloseq(ps1_eval_clr, ps_truth_clr)
-ps_cal_clr <- merge_phyloseq(ps1_eval_clr_cal, ps_truth_clr)
+sample_data(ps.truth.clr)[, "Set"] <- "Other"
+ps.clr <- prune_samples(samples_eval, ps1.clr) %>%
+    merge_phyloseq(ps.truth.clr)
+ps.clr.cal <- prune_samples(samples_eval, ps1.clr.cal) %>%
+    merge_phyloseq(ps.truth.clr)
 ```
-
 Distances before/after:
 ```{r}
-d <- phyloseq::distance(ps_clr, method = 'euclidean')
-d_cal <- phyloseq::distance(ps_cal_clr, method = 'euclidean')
+d <- phyloseq::distance(ps.clr, method = 'euclidean')
+d.cal <- phyloseq::distance(ps.clr.cal, method = 'euclidean')
 
-tb0 <- usedist::dist_groups(d, sample_data(ps_clr)$Protocol) %>% as_tibble %>%
+tb0 <- usedist::dist_groups(d, sample_data(ps.clr)$Protocol) %>% as_tibble %>%
     mutate(Calibrated = "No")
-tb1 <- usedist::dist_groups(d_cal, sample_data(ps_cal_clr)$Protocol) %>%
+tb1 <- usedist::dist_groups(d.cal, sample_data(ps.clr.cal)$Protocol) %>%
     as_tibble %>%
     mutate(Calibrated = "Yes")
 tb2 <- bind_rows(tb0, tb1)
 tb3 <- tb2 %>%
-    filter(Group2 == "Truth")
+    filter(Item1 %in% samples_eval, Group2 == "Truth")
 ```
 
 ```{r}
@@ -307,61 +340,117 @@ ggplot(tb3, aes(Calibrated, Distance)) +
     facet_wrap(~Group1)
 ```
 
+TODO: look for a simpler way to do this procedure.
+
 ### Ordinations
 
 Get a combined phyloseq with calibrated and uncalibrated samples and the truth
 ```{r}
-# ps1_eval_merged <- merge_phyloseq(ps1_eval_clr, ps1_eval_clr_cal, 
-ps2 <- ps1_eval_clr
-ps2_cal <- ps1_eval_clr_cal
-sample_names(ps2_cal) <- sample_names(ps2_cal) %>% paste0(".cal")
-sample_data(ps2)$Calibrated <- "No"
-sample_data(ps2_cal)$Calibrated <- "Yes"
-sample_data(ps_truth_clr)$Calibrated <- "Truth"
-ps2_all <- merge_phyloseq(ps2, ps2_cal, ps_truth_clr)
+sample_data(ps1.clr)$Calibrated <- "No"
+sample_names(ps1.clr.cal) <- sample_names(ps1.clr.cal) %>% paste0(".cal")
+sample_data(ps1.clr.cal)$Calibrated <- "Yes"
+sample_data(ps.truth.clr)$Calibrated <- NA
+ps2.clr <- merge_phyloseq(ps1.clr, ps1.clr.cal) %>%
+    subset_samples(Individual %in% c(individuals_est, individuals_eval)) %>%
+    merge_phyloseq(ps.truth.clr)
 ```
 
-NMDS:
-```{r}
-ord <- ordinate(ps2_all, "NMDS", "euclidean")
+NMDS similar to PCA so currently not evaluated.
+```{r, eval=F}
+ord <- ordinate(ps2.clr, "NMDS", "euclidean")
 ```
-```{r, fig.height = 6, fig.width = 8}
-p <- plot_ordination(ps2_all, ord, type="samples", color="Protocol", 
+```{r, eval=F, fig.height = 6, fig.width = 8}
+p <- plot_ordination(ps2.clr, ord, type="samples", color="Protocol", 
     shape = "Calibrated")
-ggplot(p$data, aes(x = NMDS1, y = NMDS2, 
-        color = Calibrated, label = Protocol)) +
-    geom_text()
+pd <- p$data %>% as_tibble %>%
+    mutate(ff = ifelse(Set == "Est", "bold", "plain"))
+ggplot(pd, aes(x = NMDS1, y = NMDS2, 
+       color = Calibrated, label = Protocol)) +
+    geom_label(data = filter(pd, Set == "Est")) +
+    geom_text(data = filter(pd, Set != "Est"))
 ```
 
 PCA:
 ```{r, fig.height = 6, fig.width = 8}
-p <- plot_pca(ps2_all)
+p <- plot_pca(ps2.clr)
 ggplot(p$data, aes(x = PC1, y = PC2, 
         color = Calibrated, label = Protocol)) +
-    geom_text() + 
+    geom_label(data = filter(p$data, Set == "Est")) +
+    geom_text(data = filter(p$data, Set != "Est")) +
     labs(p$labels[1:2])
 ```
 
+A version with a skewed aspect ratio to better reflect the amount of variation
+on each axis:
 ```{r, fig.height = 4, fig.width = 10}
 ggplot(p$data, aes(x = PC1, y = PC2, 
         color = Calibrated, label = Protocol)) +
     geom_text() + 
     labs(p$labels[1:2]) + 
-    coord_fixed(2 * 12.7 / 76.2)
+    coord_fixed(30 / 70)
+# TODO: make this automatically get the true %'s
 ```
+
+### Before and afters (prototypes for the poster)
+
+```{r, fig.height = 6, fig.width = 8}
+p <- plot_pca(ps2.clr)
+pd <- p$data %>%
+    filter(Sample != "Truth")
+truth <- p$data %>% 
+    filter(Sample == "Truth") %>% 
+    select(-Calibrated)
+ggplot(pd, aes(x = PC1, y = PC2, color = Protocol, label = Individual, 
+        alpha = (Set == "Eval"))) +
+    geom_point(data = truth, aes(x = PC1, y = PC2), 
+        shape = 3, size = 5, inherit.aes = FALSE) +
+    geom_point() +
+    scale_alpha_discrete(range = c(0.5, 1)) +
+    facet_grid(Calibrated ~ .) +
+    labs(p$labels[1:2]) +
+    theme(axis.text.x = element_blank(), 
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank())
+```
+
+```{r}
+tb.clr <- ps2.clr %>% as_tibble %>%
+    gather(key = "Taxon", value = "CLR", taxa_names(ps1.clr)) %>%
+    mutate(Taxon = factor(Taxon, species_ordered)) %>%
+    filter(Sample != "Truth")
+lvls <- tb.clr$Taxon %>% levels
+# Points for step function of true abundances
+tb.step <- tibble(x = seq(0.5, 10.5, by = 0.5)) %>%
+    mutate(x_int = pmin(floor(x + 0.5), 10),
+        Taxon = lvls[x_int]) %>%
+    left_join(mock_comp, by = "Taxon")
+ggplot(tb.clr, aes(x = Taxon, y = 2^CLR)) + 
+    geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
+            alpha = (Set == "Eval")), 
+        position = position_jitter(width=0.25, height=0)) +
+    geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
+    ylab("Abundance / geometric mean") +
+    scale_y_log10() +
+    # facet_grid(.~Calibrated) +
+    facet_grid(Calibrated ~ .) +
+    scale_alpha_discrete(range = c(0.5, 1)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.x = element_blank())
+```
+
+
 
 ### Bar plots
 
 ```{r}
-ps2_all_ra <- ps2_all %>%
+ps2.ra <- ps2.clr %>%
     transform_sample_counts(function (x) {
         y <- 2**x
         y / sum(y)
     })
-p <- plot_bar(ps2_all_ra)
+p <- plot_bar(ps2.ra)
 pd <- p$data %>% as_tibble %>%
     rename(Taxon = OTU) %>%
-    select(-Lab) %>%
     mutate(Taxon = factor(Taxon, species_ordered))
 ```
 
@@ -373,20 +462,11 @@ ggplot(pd0, aes(x = Sample, y = Abundance, fill = Taxon)) +
     geom_bar(stat = "identity") +
     facet_grid(. ~ Calibrated, 
         scales = "free", space = "free", shrink = TRUE)
-ggplot(pd0, aes(x = Sample, y = Abundance, fill = Taxon)) +
-    geom_bar(stat = "identity") +
-    facet_grid(. ~ Calibrated, 
-        scales = "free", space = "free", shrink = TRUE) +
-    scale_y_log10()
-```
-
-```{r, eval=F}
-# For plotting: Remove Truth as a protocol, but keep as a calibration status;
-# give a copy for each protocol
-ggplot(pd, aes(x = Sample, y = Abundance, fill = Taxon)) +
-    geom_bar(stat = "identity") +
-    facet_grid(. ~ Protocol, 
-        scales = "free", space = "free", shrink = TRUE)
+# ggplot(pd0, aes(x = Sample, y = Abundance, fill = Taxon)) +
+#     geom_bar(stat = "identity") +
+#     facet_grid(. ~ Calibrated, 
+#         scales = "free", space = "free", shrink = TRUE) +
+#     scale_y_log10()
 ```
 
 ### Estimate of C. difficile absolute abundance
@@ -396,32 +476,27 @@ I am using the most abundant of the mock community as a "spike-in" that is used
 to obtain absolute abundance estimates of a pathogen, C. difficile. Note that
 uncalibrated estimates systematically underestimate the abundance of C.
 difficile; the calibrated estimates are much more accurate.
-
 ```{r}
 # Get the relative abundances:
-ps1_eval_cal <- transform_sample_counts(ps1_eval_clr_cal, 
+ps2.ra <- transform_sample_counts(ps2.clr, 
     function (x) {x <- 2**x; x / sum(x)})
 # Estimate absolute abundances by treating Prevotella as the only spike-in
 spikein <- "Prevotella_melaninogenica"
 spikein_density <- mock_comp %>% filter(Taxon == spikein) %$% 2**Log2_density
 # get the AAs 
-ps1_eval_aa <- ps1_eval %>%
+ps2.aa <- ps2.ra %>%
     transform_sample_counts(function (x) {x * spikein_density / x[spikein]})
-ps1_eval_cal_aa <- ps1_eval_cal %>%
-    transform_sample_counts(function (x) {x * spikein_density / x[spikein]})
-```
-
-```{r}
-aa_tb <- list(ps1_eval_aa, ps1_eval_cal_aa) %>% 
-    map(as_tibble) %>%
-    bind_rows(.id = "Calibrated") %>%
-    mutate(Calibrated = map_chr(Calibrated, switch, "1" = "No", "2" = "Yes"))
+# Get a tibble for plotting
+tb.aa <- as_tibble(ps2.aa)
+tb.aa0 <- tb.aa %>%
+    filter(Set %in% "Eval")
+# The true CD density
+cdiff_density <- mock_comp %>% filter(Taxon == "Clostridium_difficile") %$%
+    2**Log2_density
 ```
 
 ```{r, fig.height = 4, fig.width = 6}
-cdiff_density <- mock_comp %>% filter(Taxon == "Clostridium_difficile") %$%
-    2**Log2_density
-ggplot(aa_tb, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) +
+ggplot(tb.aa0, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) +
     geom_vline(xintercept = cdiff_density, color = "grey") +
     geom_jitter(height = 0.1, width = 0) +
     scale_x_log10()
@@ -431,48 +506,47 @@ ggplot(aa_tb, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) 
 
 ## Calibration relative to protocol W
 
-We want a data frame with each row corresponding to a species and each column
-corresponding to a protocol.
+Estimate biases:
 ```{r}
-## Get biases
-# Hack: trick aldex into thinking we have counts
-min_ra <- ps1_est %>% otu_table %>% as("matrix") %>% {min(.[.>0])}
-ps1_est0 <- ps1_est %>% transform_sample_counts(function (x) round(x / min_ra))
-
-bias_list <- c('H', 'Q') %>%
-    map(~estimate_biases_aldex(ps1_est0, contrast = c('Protocol', ., 'W'),
-            multithread = TRUE))
-names(bias_list) <- c('H', 'Q')
-bias_df <- bias_list %>%
-    bind_rows(.id = "Protocol")
+taxa <- taxa_names(ps1)
+ps1.clr <- ps1 %>% transform_sample_counts(clr, denom = "all")
+# Calculate the median clr across individuals within a protocol
+tb0 <- ps1.clr %>% as_tibble %>%
+    filter(Sample %in% samples_est) %>%
+    group_by(Protocol) %>%
+    summarize_at(taxa, median)
+# (Above here, same as for bias to truth)
+# Get the biases as the diff from protocol W
+tb1 <- tb0 %>%
+    gather(key = "Taxon", value = "CLR", taxa) %>%
+    spread(key = Protocol, value = CLR)
+biases <- tb1 %>%
+    mutate(H = H - W, Q = Q - W, W = W - W)
+# Format for my calibration functions
+bias_mat <- biases %>% select(-Taxon) %>% as("matrix")
+rownames(bias_mat) <- biases$Taxon
 ```
-Get biases in a form for the `calibrate` function.
+Calibrate the full set of samples.
 ```{r}
-biases <- bias_df %>%
-    select(Taxon, Protocol, Bias) %>%
-    mutate(Bias = 2**Bias) %>%
-    spread(key = Protocol, value = Bias) %>%
-    mutate(W = 1)
-ps1_eval_cal <- calibrate(ps1_eval, "Protocol", biases)
+ps1.clr.cal <- calibrate_clr(ps1.clr, "Protocol", bias_mat)
 ```
-
 Distances before/after:
 ```{r}
-ps1_eval_clr <- ps1_eval %>% transform_sample_counts(clr)
-ps1_eval_cal_clr <- ps1_eval_cal %>% transform_sample_counts(clr)
-d <- phyloseq::distance(ps1_eval_clr, method = 'euclidean')
-d_cal <- phyloseq::distance(ps1_eval_cal_clr, method = 'euclidean')
-
-tb0 <- usedist::dist_groups(d, sample_data(ps1_eval_clr)$Protocol) %>% as_tibble %>%
+d <- phyloseq::distance(ps1.clr, method = 'euclidean')
+d.cal <- phyloseq::distance(ps1.clr.cal, method = 'euclidean')
+tb0 <- usedist::dist_groups(d, sample_data(ps1.clr)$Protocol) %>% 
+    as_tibble %>%
     mutate(Calibrated = "No")
-tb1 <- usedist::dist_groups(d_cal, sample_data(ps1_eval_cal_clr)$Protocol) %>%
+tb1 <- usedist::dist_groups(d.cal, sample_data(ps1.clr.cal)$Protocol) %>%
     as_tibble %>%
     mutate(Calibrated = "Yes")
-tb <- bind_rows(tb0, tb1)
+tb2 <- bind_rows(tb0, tb1)
+tb3 <- tb2 %>%
+    filter(Item1 %in% samples_eval, Item2 %in% samples_eval)
 ```
 
 ```{r}
-ggplot(tb, aes(Label, Distance)) +
+ggplot(tb3, aes(Label, Distance)) +
     geom_violin(draw_quantiles = c(0.5)) + 
     geom_jitter(width=0.25) + 
     facet_wrap(~Calibrated) + 
