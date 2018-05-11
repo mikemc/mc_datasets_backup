@@ -4,7 +4,7 @@ output:
   html_document:
     toc: true
     toc_float: false
-    code_folding: show
+    code_folding: hide
     self_contained: true
 ---
 
@@ -21,6 +21,8 @@ options(width=100)
 ```
 
 ```{r load_packages, include=T, cache=F}
+# Use dev mode for latest version of ggplot
+devtools::dev_mode(on = TRUE)
 library(phyloseq)
 library(tidyverse)
 library(magrittr)
@@ -40,7 +42,7 @@ metadata_path <- file.path(git_path, "costea2017", "metadata")
 
 Phyloseq object with the species abundance table for Phase 3 samples:
 ```{r load_data}
-ps <- readRDS(file.path(data_path, "phase3_phyloseq.Rds"))
+ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
 sample_data(ps) <- sample_data(ps) %>% 
 sample_data(ps) %>% 
     subset(select = -Lab) %>%
@@ -112,7 +114,6 @@ ps.truth.clr <- phyloseq(st.truth, sam.truth)
 
 # Exploration
 
-
 ```{r, fig.height = 6, fig.width = 8}
 ps1.clr <- ps1 %>% transform_sample_counts(clr, denom = "all")
 p <- merge_phyloseq(ps1.clr, ps.truth.clr) %>%
@@ -165,6 +166,23 @@ ggplot(tb.clr, aes(x = Taxon, y = 2^CLR)) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         axis.title.x = element_blank())
 ```
+
+Phylogeny:
+```{r}
+plot(phy_tree(ps1))
+# ape::add.scale.bar()
+```
+
+Some facts about species biology from the Microbe Directory:
+```{r}
+microbe_dir <- readr::read_csv(file.path("~/data", "2018-04-17_microbe-directory.csv"))
+species_names <- taxa_names(ps1) %>% str_replace("_", " ")
+# microbe_dir %>% filter(species %in% a) %>% select(family:species)
+microbe_dir %>% filter(species %in% species_names) %>% 
+    select(species, gram_stain, spore_forming, biofilm_forming, optimal_ph)
+```
+Note that *Clostridium saccharolyticum* is listed Gram-positive here, but as
+negative in Costea2017 Fig 6 and at http://bacmap.wishartlab.com/organisms/1148
 
 # Pairwise biases
 
@@ -222,7 +240,8 @@ ggplot(tb0,
     # geom_jitter(width=0.25, height=0) +
     ylab("(Log2) Bias") +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-        axis.title.x = element_blank())
+        axis.title.x = element_blank()) +
+    coord_cartesian(clip = "off")
 ```
 
 # CLR biases
@@ -252,8 +271,8 @@ ggplot(tb.diff,
     # geom_jitter(width=0.25, height=0) +
     ylab("(Log2) Bias") +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
-        axis.title.x = element_blank())
-    # coord_cartesian(clip = "off")
+        axis.title.x = element_blank()) +
+    coord_cartesian(clip = "off")
 ```
 
 # Calibration
@@ -327,14 +346,15 @@ tb3 <- tb2 %>%
     filter(Item1 %in% samples_eval, Group2 == "Truth")
 ```
 
-```{r}
+```{r, fig.height = 6}
 # ggplot(tb3, aes(Label, Distance)) +
 #     geom_violin(draw_quantiles = c(0.5)) + 
 #     geom_jitter(width=0.25) + 
 #     facet_wrap(~Calibrated)
 # ggplot(tb3, aes(Label, Distance, color = Calibrated)) +
 #     geom_jitter(width=0.25)
-ggplot(tb3, aes(Calibrated, Distance)) +
+set.seed(2)
+ggplot(tb3, aes(Calibrated, Distance, color = Group1)) +
     geom_violin(draw_quantiles = c(0.5)) + 
     geom_jitter(width=0.25) + 
     facet_wrap(~Group1)
@@ -401,11 +421,11 @@ truth <- p$data %>%
     filter(Sample == "Truth") %>% 
     select(-Calibrated)
 ggplot(pd, aes(x = PC1, y = PC2, color = Protocol, label = Individual, 
-        alpha = (Set == "Eval"))) +
+        shape = Set)) +
     geom_point(data = truth, aes(x = PC1, y = PC2), 
         shape = 3, size = 5, inherit.aes = FALSE) +
     geom_point() +
-    scale_alpha_discrete(range = c(0.5, 1)) +
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
     facet_grid(Calibrated ~ .) +
     labs(p$labels[1:2]) +
     theme(axis.text.x = element_blank(), 
@@ -426,14 +446,14 @@ tb.step <- tibble(x = seq(0.5, 10.5, by = 0.5)) %>%
     left_join(mock_comp, by = "Taxon")
 ggplot(tb.clr, aes(x = Taxon, y = 2^CLR)) + 
     geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
-            alpha = (Set == "Eval")), 
+        shape = Set),
         position = position_jitter(width=0.25, height=0)) +
     geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
     ylab("Abundance / geometric mean") +
     scale_y_log10() +
     # facet_grid(.~Calibrated) +
     facet_grid(Calibrated ~ .) +
-    scale_alpha_discrete(range = c(0.5, 1)) +
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
         axis.title.x = element_blank())
 ```
@@ -487,7 +507,8 @@ spikein_density <- mock_comp %>% filter(Taxon == spikein) %$% 2**Log2_density
 ps2.aa <- ps2.ra %>%
     transform_sample_counts(function (x) {x * spikein_density / x[spikein]})
 # Get a tibble for plotting
-tb.aa <- as_tibble(ps2.aa)
+tb.aa <- as_tibble(ps2.aa) %>%
+    filter(Set != "Other")
 tb.aa0 <- tb.aa %>%
     filter(Set %in% "Eval")
 # The true CD density
@@ -495,11 +516,43 @@ cdiff_density <- mock_comp %>% filter(Taxon == "Clostridium_difficile") %$%
     2**Log2_density
 ```
 
-```{r, fig.height = 4, fig.width = 6}
-ggplot(tb.aa0, aes(x = Clostridium_difficile, y = Protocol, color = Calibrated)) +
+```{r, fig.height = 4, fig.width = 6, eval = F}
+p <- ggplot(tb.aa0, aes(x = Clostridium_difficile, y = Protocol, 
+        color = Calibrated)) +
     geom_vline(xintercept = cdiff_density, color = "grey") +
     geom_jitter(height = 0.1, width = 0) +
-    scale_x_log10()
+    scale_x_log10() +
+    annotate("text", x = cdiff_density, y = Inf, label = "True abundance",
+        vjust = -0.5) +
+    theme(plot.margin = margin(t = 1, unit = "lines"))
+    # theme(plot.margin = unit(c(1, 1, 0.5, 0.5), "lines"))
+    # theme(plot.margin = unit(c(0.3,0.1,0.1,0.1), "inches"))
+gt <- ggplot_gtable(ggplot_build(p))
+gt$layout$clip[gt$layout$name == "panel"] <- "off"
+grid::grid.draw(gt)
+```
+<!-- See this link for info about annotation outside plot. Note that it seems
+to work for me with the regular annotate function, rather than annotate custom.
+https://stackoverflow.com/questions/12409960/ggplot2-annotate-outside-of-plot/12417481#12417481
+-->
+
+Version with estimation and evaluation samples:
+```{r, fig.height = 4.8, fig.width = 7.2}
+my_xlab <- expression(paste("Density of ", italic("Clostridium difficile")))
+
+p <- ggplot(tb.aa, aes(x = Clostridium_difficile, y = Protocol, 
+        color = Calibrated, shape = Set)) +
+    geom_vline(xintercept = cdiff_density, color = "grey") +
+    geom_jitter(height = 0.1, width = 0) +
+    scale_x_log10() +
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+    annotate("text", x = cdiff_density, y = Inf, label = "True abundance",
+        vjust = -0.5) +
+    theme(plot.margin = margin(t = 1, unit = "lines")) +
+    xlab(my_xlab)
+gt <- ggplot_gtable(ggplot_build(p))
+gt$layout$clip[gt$layout$name == "panel"] <- "off"
+grid::grid.draw(gt)
 ```
 
 ## Calibration relative to the ground truth using the mock-only sample
