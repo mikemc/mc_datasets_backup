@@ -1,0 +1,314 @@
+---
+title: "NC Microbiome poster figures"
+output:
+  html_document:
+    toc: true
+    toc_float: false
+    code_folding: hide
+    self_contained: true
+---
+
+# Setup
+
+```{r package_options, include=FALSE, cache=FALSE}
+knitr::opts_knit$set(progress=TRUE, verbose=TRUE)
+# Global chunk options
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE, echo=TRUE, warning=FALSE,
+    message=FALSE, fig.width=8, fig.height=6, include=TRUE)
+# R options
+options(width=100)
+# options(digits=2)
+```
+
+```{r load_packages, include=T, cache = F}
+# Use dev mode for latest version of ggplot
+devtools::dev_mode(on = TRUE)
+library(phyloseq)
+library(tidyverse)
+library(magrittr)
+
+## Source bias estimation functions
+devtools::load_all("~/active_research/src/metacal")
+
+## Avoid confusing behavior from factor conversion
+options(stringsAsFactors = FALSE)
+```
+
+# Costea et al 2017 (shotgun data)
+
+```{r costea_setup}
+git_path <- file.path("~/active_research/metagenomics_calibration")
+data_path <- file.path(git_path, "costea2017", "data")
+metadata_path <- file.path(git_path, "costea2017", "metadata")
+
+# Phyloseq object with the species abundance table for Phase 3 samples:
+ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
+sample_data(ps) <- sample_data(ps) %>% 
+sample_data(ps) %>% 
+    subset(select = -Lab) %>%
+    within(Individual <- ifelse(Individual == "Mock-only", "M", Individual))
+# Optionally, remove the extra two samples for the Q protocol
+ps <- subset_samples(ps, !(Individual %in% c("A", "B")))
+
+# We are going to subset to the mock taxa only. There are a few zero counts in
+# the rare taxon `Blautia_hansenii`. To deal with these I will add pseudocounts
+# to each taxon, equal to the minimal observed abundance in that sample.
+ps_nonzero <- ps %>% 
+    transform_sample_counts(
+        function (x) {
+            min_nonzero <- min(x[x>0])
+            x <- x + min_nonzero
+            x / sum(x)
+        })
+
+# Now we subset to the mock community taxa:
+mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
+    "Clostridium_perfringens", "Clostridium_saccharolyticum",
+    "Fusobacterium_nucleatum", "Lactobacillus_plantarum",
+    "Prevotella_melaninogenica", "Salmonella_enterica",
+    "Vibrio_cholerae", "Yersinia_pseudotuberculosis")
+phage <- "Salmonella_phage_Fels_1"
+ps0 <- prune_taxa(mock_taxa, ps)
+# And a version with no zeros:
+ps1 <- prune_taxa(mock_taxa, ps_nonzero)
+
+# Expected mock community composition:
+mdf <- readxl::read_xlsx(file.path(metadata_path,
+        "composition_of_mock_community.xlsx"), sheet=1)
+mdf <- mdf %>% rename(Taxon = `Bacterial species`) %>%
+    mutate(Taxon = str_extract(Taxon, "\\S+ \\S+"),
+        Taxon = str_replace(Taxon, " ", "_"))
+# I'm not sure what the "ground truth" is; for now, take as
+# "bacterial cells in spike in Mix"
+mdf0 <- mdf %>%
+    select(Taxon, Cell_density = "bacterial cells in spike in Mix")
+# Take the average of the log density as the estimated "truth" for the species
+# where there are two measurements
+mock_comp <- mdf0 %>%
+    mutate(Log2_density = log2(Cell_density)) %>%
+    group_by(Taxon) %>%
+    summarize(Log2_density = mean(Log2_density))
+# Compute the CLR
+mock_comp <- mock_comp %>%
+    mutate(CLR = Log2_density - mean(Log2_density))
+# Verify species names match
+setequal(taxa_names(ps0), mock_comp$Taxon)
+# Phyloseq object with the truth
+st.truth <- mock_comp %>% select(CLR) %>% as("matrix") %>% t
+colnames(st.truth) <- mock_comp$Taxon
+rownames(st.truth) <- "Truth"
+st.truth <- otu_table(st.truth, taxa_are_rows = FALSE)
+sam.truth <- data.frame(Protocol = "Truth", Phase = 3, row.names = "Truth") %>%
+    sample_data
+ps.truth.clr <- phyloseq(st.truth, sam.truth)
+```
+
+Calibration relative to the "ground truth".
+```{r}
+# First, we'll pick samples for estimation and cross validation.
+# Pick Individuals for estimation and evaluation
+set.seed(2)
+sam <- sample_data(ps1) %>% as_tibble
+individuals_est <- base::sample(1:8, 3, replace = FALSE) %>% as.character
+individuals_eval <- 1:8 %>% as.character %>% setdiff(individuals_est)
+samples_est <- sam %>% 
+    filter(Individual %in% individuals_est) %$%
+    Sample
+samples_eval <- sam %>% 
+    filter(Individual %in% individuals_eval) %$%
+    Sample
+sample_data(ps1)[, "Set"] <- "Other"
+sample_data(ps1)[samples_est, "Set"] <- "Est"
+sample_data(ps1)[samples_eval, "Set"] <- "Eval"
+# Estimate biases:
+# (Re-generate ps1.clr to inherit the Set variable)
+ps1.clr <- ps1 %>% transform_sample_counts(clr, denom = "all")
+taxa <- taxa_names(ps1)
+# Calculate the median clr across individuals within a protocol
+tb0 <- ps1.clr %>% as_tibble %>%
+    filter(Sample %in% samples_est) %>%
+    group_by(Protocol) %>%
+    summarize_at(taxa, median)
+# Get the biases as the diff from truth
+tb1 <- tb0 %>%
+    gather(key = "Taxon", value = "CLR", taxa) %>%
+    left_join(mock_comp, by = "Taxon", suffix = c("", "_true")) %>%
+    mutate(Bias = CLR - CLR_true)
+# Format for my calibration functions
+biases <- tb1 %>%
+    select(Taxon, Protocol, Bias) %>%
+    spread(key = Protocol, value = Bias)
+bias_mat <- biases %>% select(-Taxon) %>% as("matrix")
+rownames(bias_mat) <- biases$Taxon
+# Calibrate the full set of samples.
+ps1.clr.cal <- calibrate_clr(ps1.clr, "Protocol", bias_mat)
+# Objects for computing distances:
+sample_data(ps.truth.clr)[, "Set"] <- "Other"
+ps.clr <- prune_samples(samples_eval, ps1.clr) %>%
+    merge_phyloseq(ps.truth.clr)
+ps.clr.cal <- prune_samples(samples_eval, ps1.clr.cal) %>%
+    merge_phyloseq(ps.truth.clr)
+
+# # Distances before/after:
+# d <- phyloseq::distance(ps.clr, method = 'euclidean')
+# d.cal <- phyloseq::distance(ps.clr.cal, method = 'euclidean')
+# tb0 <- usedist::dist_groups(d, sample_data(ps.clr)$Protocol) %>% as_tibble %>%
+#     mutate(Calibrated = "No")
+# tb1 <- usedist::dist_groups(d.cal, sample_data(ps.clr.cal)$Protocol) %>%
+#     as_tibble %>%
+#     mutate(Calibrated = "Yes")
+# tb2 <- bind_rows(tb0, tb1)
+# tb3 <- tb2 %>%
+#     filter(Item1 %in% samples_eval, Group2 == "Truth") %>%
+#     rename(Protocol = Group1)
+
+# Get a combined phyloseq with calibrated and uncalibrated samples and the truth
+sample_data(ps1.clr)$Calibrated <- "No"
+sample_names(ps1.clr.cal) <- sample_names(ps1.clr.cal) %>% paste0(".cal")
+sample_data(ps1.clr.cal)$Calibrated <- "Yes"
+sample_data(ps.truth.clr)$Calibrated <- NA
+ps2.clr <- merge_phyloseq(ps1.clr, ps1.clr.cal) %>%
+    subset_samples(Individual %in% c(individuals_est, individuals_eval)) %>%
+    merge_phyloseq(ps.truth.clr)
+```
+
+# Figures
+
+Theme setup
+```{r}
+```
+
+## Calibration, before and after
+
+```{r, fig.height = 5, fig.width = 8}
+ps2.clr10 <- transform_sample_counts(ps2.clr, function (x) x / log2(10))
+p <- plot_pca(ps2.clr10)
+pd.no <- p$data %>%
+    filter(Sample != "Truth", Calibrated == "No")
+pd.yes <- p$data %>%
+    filter(Sample != "Truth", Calibrated == "Yes")
+truth <- p$data %>% 
+    filter(Sample == "Truth") %>% 
+    select(-Calibrated)
+# ggplot_build(p)
+xrange <- range(p$data$PC1)
+yrange <- range(p$data$PC2)
+# Uncalibrated:
+g.pca.no <- ggplot(pd.no, aes(x = PC1, y = PC2, color = Protocol, 
+        label = Individual, shape = Set)) +
+    geom_point(data = truth, aes(x = PC1, y = PC2), 
+        shape = 3, size = 5, inherit.aes = FALSE) +
+    geom_point() +
+    xlim(xrange) + ylim(yrange) + 
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+    labs(p$labels[1:2])
+# Calibrated:
+g.pca.yes <- ggplot(pd.yes, aes(x = PC1, y = PC2, color = Protocol, 
+        label = Individual, shape = Set)) +
+    geom_point(data = truth, aes(x = PC1, y = PC2), 
+        shape = 3, size = 5, inherit.aes = FALSE) +
+    geom_point() +
+    xlim(xrange) + ylim(yrange) + 
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+    labs(p$labels[1:2])
+# g.no
+# g.yes
+```
+
+Centered abundance (Ratio relative to geometric mean) before and after
+calibration, showing all samples (Est and Eval), and with "ground truth" shown
+by grey step function.
+```{r, fig.height = 8}
+tb.clr <- ps2.clr %>% as_tibble %>%
+    gather(key = "Taxon", value = "CLR", taxa_names(ps1.clr)) %>%
+    mutate(Taxon = factor(Taxon, species_ordered)) %>%
+    filter(Sample != "Truth")
+lvls <- tb.clr$Taxon %>% levels
+# Points for step function of true abundances
+tb.step <- tibble(x = seq(0.5, 10.5, by = 0.5)) %>%
+    mutate(x_int = pmin(floor(x + 0.5), 10),
+        Taxon = lvls[x_int]) %>%
+    left_join(mock_comp, by = "Taxon")
+# range(2^tb.clr$CLR)
+# [1]  0.002551118 36.578433828
+yrange <- range(1e-3, 100)
+# Get the plots
+# g.step <- list("No", "Yes") %>%
+#     map(~filter(tb.clr, Calibrated == .)) %>%
+#     map(~ ggplot(., aes(x = Taxon, y = 2^CLR)) + 
+#         geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
+#             shape = Set),
+#             position = position_jitter(width=0.25, height=0)) +
+#         geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
+#         ylab("Abundance / geometric mean") +
+#         scale_y_log10(limits = yrange) +
+#         scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+#         theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
+#                 color = "black"),
+#             axis.title.x = element_blank())
+#         )
+g.step.no <- ggplot(filter(tb.clr, Calibrated == "No"),
+    aes(x = Taxon, y = 2^CLR)) + 
+    geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
+        shape = Set),
+        position = position_jitter(width=0.25, height=0)) +
+    geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
+    ylab("Abundance / geometric mean") +
+    scale_y_log10(limits = yrange) +
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
+            color = "black"),
+        axis.title.x = element_blank())
+g.step.yes <- ggplot(filter(tb.clr, Calibrated == "Yes"),
+    aes(x = Taxon, y = 2^CLR)) + 
+    geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
+        shape = Set),
+        position = position_jitter(width=0.25, height=0)) +
+    geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
+    ylab("Abundance / geometric mean") +
+    scale_y_log10(limits = yrange) +
+    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
+            color="black"),
+        axis.title.x = element_blank())
+```
+TODO: Fix clipping of x-axis label in this figure
+
+```{r, fig.height=10, fig.width=14}
+# gridExtra::grid.arrange(g.step.no, g.pca.no, g.step.yes, g.pca.yes, nrow=2)
+# list(g.step.no, g.pca.no, g.step.yes, g.pca.yes) %>%
+#     map(egg::set_panel_size, width = unit(6, "in"), height = unit(4, "in")) %>%
+#     gridExtra::grid.arrange(grobs = ., nrow=2)
+# multi_g <- egg::ggarrange(g.step.no, g.pca.no, g.step.yes, g.pca.yes,
+#     nrow = 2,
+#     widths = rep(unit(6, "in"), 2),
+#     heights = rep(unit(4, "in"), 2)
+#     )
+multi_g <- egg::ggarrange(g.step.no, g.pca.no, g.step.yes, g.pca.yes,
+    nrow = 2
+    # widths = rep(unit(6, "in"), 2),
+    # heights = rep(unit(4, "in"), 2)
+    )
+multi_g
+ggsave("/tmp/test_plot.svg", multi_g, width = 18, height = 14, units = "in")
+```
+
+```{r, fig.height=10, fig.width=14}
+plots <- list(g.step.no, g.pca.no, g.step.yes, g.pca.yes) %>%
+    map(~ . +
+        theme(text = element_text(family = "DejaVu Sans", size=18),
+            ))
+# Expand the left margin to avoid clipping species names
+plots[c(1,3)] <- plots[c(1,3)] %>%
+    map(~ . + theme(plot.margin = margin(l = 3, unit = "lines")))
+gt <- egg::ggarrange(plots = plots, nrow = 2, clip = "on")
+gt
+ggsave("/tmp/test_plot.svg", gt, width = 18, height = 14, units = "in")
+```
+
+```{r}
+# list(g.step.no, g.pca.no, g.step.yes, g.pca.yes) %>%
+#     map(egg::set_panel_size, width = unit(6, "in"), height = unit(4, "in")) %>%
+    # map(~ ggsave, paste0("/tmp/", 
+    #     multi_g, width = 14, height = 10, units = "in")
+```
