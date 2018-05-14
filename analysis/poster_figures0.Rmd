@@ -26,6 +26,7 @@ devtools::dev_mode(on = TRUE)
 library(phyloseq)
 library(tidyverse)
 library(magrittr)
+library(ggthemes)
 
 ## Source bias estimation functions
 devtools::load_all("~/active_research/src/metacal")
@@ -176,105 +177,101 @@ ps2.clr <- merge_phyloseq(ps1.clr, ps1.clr.cal) %>%
 
 Theme setup
 ```{r}
+theme_set(theme_tufte() +
+    theme(text = element_text(family = "Cantarell", size=18))
+    )
 ```
 
 ## Calibration, before and after
 
-```{r, fig.height = 5, fig.width = 8}
+```{r, cache=F}
 ps2.clr10 <- transform_sample_counts(ps2.clr, function (x) x / log2(10))
 p <- plot_pca(ps2.clr10)
-pd.no <- p$data %>%
-    filter(Sample != "Truth", Calibrated == "No")
-pd.yes <- p$data %>%
-    filter(Sample != "Truth", Calibrated == "Yes")
 truth <- p$data %>% 
     filter(Sample == "Truth") %>% 
     select(-Calibrated)
 # ggplot_build(p)
 xrange <- range(p$data$PC1)
 yrange <- range(p$data$PC2)
-# Uncalibrated:
-g.pca.no <- ggplot(pd.no, aes(x = PC1, y = PC2, color = Protocol, 
-        label = Individual, shape = Set)) +
-    geom_point(data = truth, aes(x = PC1, y = PC2), 
-        shape = 3, size = 5, inherit.aes = FALSE) +
-    geom_point() +
-    xlim(xrange) + ylim(yrange) + 
-    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
-    labs(p$labels[1:2])
-# Calibrated:
-g.pca.yes <- ggplot(pd.yes, aes(x = PC1, y = PC2, color = Protocol, 
-        label = Individual, shape = Set)) +
-    geom_point(data = truth, aes(x = PC1, y = PC2), 
-        shape = 3, size = 5, inherit.aes = FALSE) +
-    geom_point() +
-    xlim(xrange) + ylim(yrange) + 
-    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
-    labs(p$labels[1:2])
-# g.no
-# g.yes
+# Get the plots:
+g.pca <- list("No", "Yes") %>%
+    map(~filter(p$data, Calibrated == ., Sample != "Truth")) %>%
+    map(~ggplot(., aes(x = PC1, y = PC2, color = Protocol, 
+            label = Individual, shape = Set)) +
+        geom_point(data = truth, aes(x = PC1, y = PC2), 
+            shape = 3, size = 5, inherit.aes = FALSE) +
+        geom_point(size = 2) +
+        scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+        xlim(xrange) + ylim(yrange) + 
+        geom_rangeframe(data = filter(p$data, Sample != "Truth"), 
+            aes(x = PC1, y = PC2),
+            sides = "bl", inherit.aes=FALSE) +
+        # scale_y_log10(breaks = c(0.003, 1e-2, 1e-1, 1, 10, 30)) +
+        labs(p$labels[1:2])
+    )
 ```
 
 Centered abundance (Ratio relative to geometric mean) before and after
 calibration, showing all samples (Est and Eval), and with "ground truth" shown
 by grey step function.
-```{r, fig.height = 8}
+```{r, cache=F}
 tb.clr <- ps2.clr %>% as_tibble %>%
     gather(key = "Taxon", value = "CLR", taxa_names(ps1.clr)) %>%
     mutate(Taxon = factor(Taxon, species_ordered)) %>%
     filter(Sample != "Truth")
-lvls <- tb.clr$Taxon %>% levels
 # Points for step function of true abundances
+lvls <- tb.clr$Taxon %>% levels
 tb.step <- tibble(x = seq(0.5, 10.5, by = 0.5)) %>%
     mutate(x_int = pmin(floor(x + 0.5), 10),
         Taxon = lvls[x_int]) %>%
     left_join(mock_comp, by = "Taxon")
+# Use the same range for both plots
 # range(2^tb.clr$CLR)
 # [1]  0.002551118 36.578433828
 yrange <- range(1e-3, 100)
+# Use spaces in species names for plotting
+levels(tb.clr$Taxon) <- levels(tb.clr$Taxon) %>%
+    str_replace("_", " ")
 # Get the plots
-# g.step <- list("No", "Yes") %>%
-#     map(~filter(tb.clr, Calibrated == .)) %>%
-#     map(~ ggplot(., aes(x = Taxon, y = 2^CLR)) + 
-#         geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
-#             shape = Set),
-#             position = position_jitter(width=0.25, height=0)) +
-#         geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
-#         ylab("Abundance / geometric mean") +
-#         scale_y_log10(limits = yrange) +
-#         scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
-#         theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
-#                 color = "black"),
-#             axis.title.x = element_blank())
-#         )
-g.step.no <- ggplot(filter(tb.clr, Calibrated == "No"),
-    aes(x = Taxon, y = 2^CLR)) + 
-    geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
-        shape = Set),
-        position = position_jitter(width=0.25, height=0)) +
-    geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
-    ylab("Abundance / geometric mean") +
-    scale_y_log10(limits = yrange) +
-    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
-            color = "black"),
-        axis.title.x = element_blank())
-g.step.yes <- ggplot(filter(tb.clr, Calibrated == "Yes"),
-    aes(x = Taxon, y = 2^CLR)) + 
-    geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
-        shape = Set),
-        position = position_jitter(width=0.25, height=0)) +
-    geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
-    ylab("Abundance / geometric mean") +
-    scale_y_log10(limits = yrange) +
-    scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
-    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
-            color="black"),
-        axis.title.x = element_blank())
+g.step <- list("No", "Yes") %>%
+    map(~filter(tb.clr, Calibrated == .)) %>%
+    map(~ggplot(., aes(x = Taxon, y = 2^CLR)) + 
+        geom_point(aes(x = Taxon, y = 2^CLR, color = Protocol, 
+            shape = Set),
+            position = position_jitter(width=0.25, height=0)) +
+        geom_step(data = tb.step, aes(x = x, y = 2^CLR), alpha=0.3) +
+        ylab("Normalized relative abundance") +
+        # scale_y_log10(limits = yrange) +
+        geom_rangeframe(data = tb.clr, sides = "l") +
+        scale_y_log10(breaks = c(0.003, 1e-2, 1e-1, 1, 10, 30)) +
+        scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
+        theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, 
+                color = "black", face = "italic"),
+            axis.title.x = element_blank())
+        )
 ```
-TODO: Fix clipping of x-axis label in this figure
 
-```{r, fig.height=10, fig.width=14}
+
+```{r, cache=F}
+plots <- list(g.step[[1]], g.pca[[1]], g.step[[2]], g.pca[[2]])
+# Expand the left margin to avoid clipping species names
+plots[c(1,3)] <- plots[c(1,3)] %>%
+    map(~ . + theme(plot.margin = margin(l = 3, unit = "lines")))
+gt <- egg::ggarrange(plots = plots, nrow = 2, clip = "on")
+gt
+ggsave("/tmp/test_plot.svg", gt, width = 18, height = 14, units = "in")
+```
+
+```{r, eval=F}
+plots[[1]] + 
+    geom_rangeframe(sides = "l") +
+    scale_y_log10(breaks = c(0.003, 1e-2, 1e-1, 1, 10, 30))
+```
+
+
+# Notes
+
+```{r, eval=F, fig.height=10, fig.width=14}
 # gridExtra::grid.arrange(g.step.no, g.pca.no, g.step.yes, g.pca.yes, nrow=2)
 # list(g.step.no, g.pca.no, g.step.yes, g.pca.yes) %>%
 #     map(egg::set_panel_size, width = unit(6, "in"), height = unit(4, "in")) %>%
@@ -284,7 +281,7 @@ TODO: Fix clipping of x-axis label in this figure
 #     widths = rep(unit(6, "in"), 2),
 #     heights = rep(unit(4, "in"), 2)
 #     )
-multi_g <- egg::ggarrange(g.step.no, g.pca.no, g.step.yes, g.pca.yes,
+multi_g <- egg::ggarrange(g.step[[1]], g.pca[[1]], g.step[[2]], g.pca[[2]],
     nrow = 2
     # widths = rep(unit(6, "in"), 2),
     # heights = rep(unit(4, "in"), 2)
@@ -293,22 +290,3 @@ multi_g
 ggsave("/tmp/test_plot.svg", multi_g, width = 18, height = 14, units = "in")
 ```
 
-```{r, fig.height=10, fig.width=14}
-plots <- list(g.step.no, g.pca.no, g.step.yes, g.pca.yes) %>%
-    map(~ . +
-        theme(text = element_text(family = "DejaVu Sans", size=18),
-            ))
-# Expand the left margin to avoid clipping species names
-plots[c(1,3)] <- plots[c(1,3)] %>%
-    map(~ . + theme(plot.margin = margin(l = 3, unit = "lines")))
-gt <- egg::ggarrange(plots = plots, nrow = 2, clip = "on")
-gt
-ggsave("/tmp/test_plot.svg", gt, width = 18, height = 14, units = "in")
-```
-
-```{r}
-# list(g.step.no, g.pca.no, g.step.yes, g.pca.yes) %>%
-#     map(egg::set_panel_size, width = unit(6, "in"), height = unit(4, "in")) %>%
-    # map(~ ggsave, paste0("/tmp/", 
-    #     multi_g, width = 14, height = 10, units = "in")
-```
