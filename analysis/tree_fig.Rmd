@@ -1,0 +1,232 @@
+---
+title: "NC Microbiome poster figures"
+output:
+  html_document:
+    toc: true
+    toc_float: false
+    code_folding: hide
+    self_contained: true
+---
+
+# Setup
+
+```{r package_options, include=FALSE, cache=FALSE}
+knitr::opts_knit$set(progress=TRUE, verbose=TRUE)
+# Global chunk options
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE, echo=TRUE, warning=FALSE,
+    message=FALSE, fig.width=8, fig.height=6, include=TRUE)
+# R options
+options(width=100)
+# options(digits=2)
+```
+
+```{r load_packages, include=T}
+# Use dev mode for latest version of ggplot
+# devtools::dev_mode(on = TRUE)
+library(phyloseq)
+library(tidyverse)
+library(magrittr)
+library(ggtree)
+
+## Source bias estimation functions
+devtools::load_all("~/active_research/src/metacal")
+
+## Avoid confusing behavior from factor conversion
+options(stringsAsFactors = FALSE)
+```
+
+```{r costea_setup}
+git_path <- file.path("~/active_research/metagenomics_calibration")
+data_path <- file.path(git_path, "costea2017", "data")
+metadata_path <- file.path(git_path, "costea2017", "metadata")
+
+# Phyloseq object with the species abundance table for Phase 3 samples:
+ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
+sample_data(ps) <- sample_data(ps) %>% 
+sample_data(ps) %>% 
+    subset(select = -Lab) %>%
+    within(Individual <- ifelse(Individual == "Mock-only", "M", Individual))
+# Optionally, remove the extra two samples for the Q protocol
+ps <- subset_samples(ps, !(Individual %in% c("A", "B")))
+
+# We are going to subset to the mock taxa only. There are a few zero counts in
+# the rare taxon `Blautia_hansenii`. To deal with these I will add pseudocounts
+# to each taxon, equal to the minimal observed abundance in that sample.
+ps_nonzero <- ps %>% 
+    transform_sample_counts(
+        function (x) {
+            min_nonzero <- min(x[x>0])
+            x <- x + min_nonzero
+            x / sum(x)
+        })
+
+# Now we subset to the mock community taxa:
+mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
+    "Clostridium_perfringens", "Clostridium_saccharolyticum",
+    "Fusobacterium_nucleatum", "Lactobacillus_plantarum",
+    "Prevotella_melaninogenica", "Salmonella_enterica",
+    "Vibrio_cholerae", "Yersinia_pseudotuberculosis")
+phage <- "Salmonella_phage_Fels_1"
+ps0 <- prune_taxa(mock_taxa, ps)
+# And a version with no zeros:
+ps1 <- prune_taxa(mock_taxa, ps_nonzero)
+
+# Expected mock community composition:
+mdf <- readxl::read_xlsx(file.path(metadata_path,
+        "composition_of_mock_community.xlsx"), sheet=1)
+mdf <- mdf %>% rename(Taxon = `Bacterial species`) %>%
+    mutate(Taxon = str_extract(Taxon, "\\S+ \\S+"),
+        Taxon = str_replace(Taxon, " ", "_"))
+# I'm not sure what the "ground truth" is; for now, take as
+# "bacterial cells in spike in Mix"
+mdf0 <- mdf %>%
+    select(Taxon, Cell_density = "bacterial cells in spike in Mix")
+# Take the average of the log density as the estimated "truth" for the species
+# where there are two measurements
+mock_comp <- mdf0 %>%
+    mutate(Log2_density = log2(Cell_density)) %>%
+    group_by(Taxon) %>%
+    summarize(Log2_density = mean(Log2_density))
+# Compute the CLR
+mock_comp <- mock_comp %>%
+    mutate(CLR = Log2_density - mean(Log2_density))
+# Verify species names match
+setequal(taxa_names(ps0), mock_comp$Taxon)
+# Phyloseq object with the truth
+st.truth <- mock_comp %>% select(CLR) %>% as("matrix") %>% t
+colnames(st.truth) <- mock_comp$Taxon
+rownames(st.truth) <- "Truth"
+st.truth <- otu_table(st.truth, taxa_are_rows = FALSE)
+sam.truth <- data.frame(Protocol = "Truth", Phase = 3, row.names = "Truth") %>%
+    sample_data
+ps.truth.clr <- phyloseq(st.truth, sam.truth)
+```
+
+## Get biases
+
+```{r}
+# First, we'll pick samples for estimation and cross validation.
+# Pick Individuals for estimation and evaluation
+set.seed(2)
+sam <- sample_data(ps1) %>% as_tibble
+individuals_est <- base::sample(1:8, 3, replace = FALSE) %>% as.character
+individuals_eval <- 1:8 %>% as.character %>% setdiff(individuals_est)
+samples_est <- sam %>% 
+    filter(Individual %in% individuals_est) %$%
+    Sample
+samples_eval <- sam %>% 
+    filter(Individual %in% individuals_eval) %$%
+    Sample
+sample_data(ps1)[, "Set"] <- "Other"
+sample_data(ps1)[samples_est, "Set"] <- "Est"
+sample_data(ps1)[samples_eval, "Set"] <- "Eval"
+```
+
+Get bias estimate using all fecal samples:
+```{r}
+# (Re-generate ps1.clr to inherit the Set variable)
+ps1.clr <- ps1 %>% transform_sample_counts(clr, denom = "all")
+taxa <- taxa_names(ps1)
+# Calculate the median clr across individuals within a protocol
+tb0 <- ps1.clr %>% as_tibble %>%
+    filter(Sample %in% c(samples_est, samples_eval)) %>%
+    group_by(Protocol) %>%
+    summarize_at(taxa, median)
+# Get the biases as the diff from truth
+tb1 <- tb0 %>%
+    gather(key = "Taxon", value = "CLR", taxa) %>%
+    left_join(mock_comp, by = "Taxon", suffix = c("", "_true")) %>%
+    mutate(Bias = CLR - CLR_true)
+# Format for my calibration functions
+biases <- tb1 %>%
+    select(Taxon, Protocol, Bias) %>%
+    spread(key = Protocol, value = Bias)
+bias_mat <- biases %>% select(-Taxon) %>% as("matrix")
+rownames(bias_mat) <- biases$Taxon
+```
+
+## Basic tree
+
+```{r}
+gt <- phy_tree(ps1) %>% ggtree
+# gt + geom_tiplab(align = TRUE) + 
+#     xlim_tree(6.5)
+gt + geom_tiplab(align = FALSE) + 
+    xlim_tree(6)
+```
+
+## Tree with bias
+
+
+Here's the line plot, which I want to plot along with the tree:
+```{r}
+biases0 <- biases %>%
+    gather(key = "Protocol", value = "Bias", -Taxon)
+ggplot(biases0, aes(x = Bias, y = Taxon, color = Protocol)) +
+  geom_point(size=3) +
+  geom_segment(aes(x = min(Bias), xend = max(Bias), 
+          y = Taxon, yend = Taxon),
+      size=0.1)
+```
+
+I can almost get this with ggtree, but I don't know how to customize it the way
+I want:
+```{r}
+gt <- phy_tree(ps1) %>% ggtree
+gt <- gt + geom_tiplab(align = TRUE)
+
+p <- facet_plot(gt,
+    panel = "Bias", 
+    data = rename(biases0, id = Taxon),
+    geom = geom_point, 
+    aes(x = Bias, color = Protocol), size = 3) +
+    theme_tree2() +
+    xlim_tree(6.5)
+    # xlim_expand(8, "Tree")
+
+d <- tibble(y = 1:ntaxa(ps1), .panel = "Bias")
+p + geom_hline(data=d, aes(yintercept=y), alpha = 0.5)
+```
+
+
+```{r}
+# Get the tree
+gt <- tree %>% ggtree
+# create a data frame for plotting biases
+td <- gt$data %>%
+    filter(isTip) %>%
+    select(Taxon = label, x, y) %>%
+    left_join(rename(biases0), by = "Taxon")
+td <- td %>%
+    mutate(x_offset = max(x) + 4,
+        Bias_scaled = Bias / 6)
+# Plot the tree with biases
+gt0 <- gt + 
+    geom_tiplab(aes(label = str_replace(label, "_", " ")),
+        align = TRUE, size = 2) + 
+    geom_segment(data = td, 
+        aes(x = x_offset + min(Bias_scaled), 
+            xend = x_offset + max(Bias_scaled), 
+            y = y, yend = y),
+      size=0.1) +
+    geom_point(data = td, 
+        aes(x = x_offset + 0, y = y),
+        shape = 124, size = 2) +
+    geom_point(data = td, 
+        aes(x = x_offset + Bias_scaled, y = y, color = Protocol),
+        size = 2)
+    # + theme(text = element_text(family = "Cantarell", size=18))
+print(gt0)
+ggsave("/tmp/tree_with_bias.svg", gt0, width = 7, height = 7, units = "in")
+```
+
+HERE. Is there a way to do this so that I can figure out the correct x offset
+automatically, without needed to do manually given figure size?
+
+
+```{r}
+theme_set(theme_tufte() +
+    theme(text = element_text(family = "Cantarell", size=18))
+    )
+
+```
