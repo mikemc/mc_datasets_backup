@@ -191,42 +191,35 @@ p + geom_hline(data=d, aes(yintercept=y), alpha = 0.5)
 
 ```{r}
 # Get the tree
-gt <- tree %>% ggtree
+gt <- phy_tree(ps1) %>% ggtree
 # create a data frame for plotting biases
 td <- gt$data %>%
     filter(isTip) %>%
     select(Taxon = label, x, y) %>%
     left_join(rename(biases0), by = "Taxon")
 td <- td %>%
-    mutate(x_offset = max(x) + 4,
-        Bias_scaled = Bias / 6)
+    mutate(x_offset = max(x) + 9,
+        Bias_scaled = Bias / 4)
 # Plot the tree with biases
 gt0 <- gt + 
     geom_tiplab(aes(label = str_replace(label, "_", " ")),
-        align = TRUE, size = 2) + 
+        align = TRUE, size = 6.5) + 
     geom_segment(data = td, 
         aes(x = x_offset + min(Bias_scaled), 
             xend = x_offset + max(Bias_scaled), 
             y = y, yend = y),
       size=0.1) +
-    geom_point(data = td, 
-        aes(x = x_offset + 0, y = y),
-        shape = 124, size = 2) +
+    geom_vline(xintercept = td$x_offset[1], alpha = 0.5, linetype = "dotted") +
+    # geom_point(data = td, 
+    #     aes(x = x_offset + 0, y = y),
+    #     shape = 124, size = 2) +
     geom_point(data = td, 
         aes(x = x_offset + Bias_scaled, y = y, color = Protocol),
-        size = 2)
-    # + theme(text = element_text(family = "Cantarell", size=18))
+        size = 2, alpha = 0.7)
 print(gt0)
-ggsave("/tmp/tree_with_bias.svg", gt0, width = 7, height = 7, units = "in")
+ggsave("/tmp/tree_with_bias.svg", gt0, width = 8, height = 8, units = "in")
 ```
 
 HERE. Is there a way to do this so that I can figure out the correct x offset
 automatically, without needed to do manually given figure size?
 
-
-```{r}
-theme_set(theme_tufte() +
-    theme(text = element_text(family = "Cantarell", size=18))
-    )
-
-```

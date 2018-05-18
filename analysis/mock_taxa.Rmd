@@ -44,7 +44,6 @@ Phyloseq object with the species abundance table for Phase 3 samples:
 ```{r load_data}
 ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
 sample_data(ps) <- sample_data(ps) %>% 
-sample_data(ps) %>% 
     subset(select = -Lab) %>%
     within(Individual <- ifelse(Individual == "Mock-only", "M", Individual))
 # Optionally, remove the extra two samples for the Q protocol
