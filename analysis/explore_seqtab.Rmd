@@ -75,12 +75,12 @@ sample_names <- ph3$library_name %>%
     {.[,2]}
 ph3 <- ph3 %>%
     mutate(Sample = sample_names) %>%
-    select(Sample, run_accession) %>%
+    select(Sample, Run_accession = run_accession) %>%
     left_join(sam_df, by="Sample")
 # Fix the sample names and add the sample data into a ps object
-sample_names(st) <- ph3$Sample[match(sample_names(st), ph3$run_accession)]
+sample_names(st) <- ph3$Sample[match(sample_names(st), ph3$Run_accession)]
 sam <- ph3 %>%
-    select(-Sample, -run_accession) %>%
+    select(-Sample, -Lab) %>%
     sample_data
 sample_names(sam) <- ph3$Sample
 ps <- merge_phyloseq(st, sam)
