@@ -40,7 +40,7 @@ metadata_path <- file.path(git_path, "costea2017", "metadata")
 git_path <- file.path("~/active_research/metagenomics_calibration")
 data_path <- file.path(git_path, "costea2017", "data")
 
-# Load the sample data and tree
+# Load the sample data and tree from the old ps object
 ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
 sam <- sample_data(ps)
 tree <- phy_tree(ps)
@@ -108,12 +108,18 @@ mat <- tb0 %>%
     as("matrix")
 rownames(mat) <- tb0$Sample
 st <- otu_table(mat, taxa_are_rows = FALSE)
-corner(st)
 # Make a new ps object
-ps.reads <- merge_phyloseq(st, sam, tree, tax)
+# TODO: Make tax a tax_table
+tax.ps <- tax %>%
+    mutate(Clade = Species) %>%
+    select(-Strain) %>%
+    distinct() %>%
+    as_matrix %>% 
+    tax_table
+ps.reads <- phyloseq(st, sam, tree, tax.ps)
 # saveRDS(ps.reads, file.path(data_path, 
 #         prepend_date("phase3_phyloseq_reads.Rds")))
-# [1] "2018-05-21_phase3_phyloseq_reads.Rds"
+# [1] "2018-05-22_phase3_phyloseq_reads.Rds"
 ```
 
 ## Relative abundance
