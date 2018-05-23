@@ -4,7 +4,7 @@ output:
   html_document:
     toc: true
     toc_float: false
-    code_folding: show
+    code_folding: hide
     self_contained: true
 ---
 
@@ -23,9 +23,7 @@ options(width=100)
 
 ```{r load_packages, include=T, cache=F}
 library(phyloseq)
-library(stringr)
 library(tidyverse)
-library(widyr)
 library(magrittr)
 
 ## Source bias estimation functions
@@ -38,39 +36,36 @@ options(stringsAsFactors = FALSE)
 ```{r load_data}
 git_path <- file.path("~/active_research/metagenomics_calibration")
 data_path <- file.path(git_path, "costea2017", "data")
-ps <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
+ps <- readRDS(file.path(data_path, "2018-05-22_phase3_phyloseq_reads.Rds"))
+ps.org <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds"))
 # Get rid of the samples of Individual = A or B b/c these were only extracted
 # by one protocol
 ps <- subset_samples(ps, !(Individual %in% c("A", "B")))
-```
-
-# Get biases within each individual
-
-For calculating biases, we want to take a log-ratio transform with the mock
-taxa as the denominator. We'll exclude Blautia hansenii from the denominator
-due to the presence of zero counts in several samples.
-```{r}
+ps
+ps.org <- subset_samples(ps.org, !(Individual %in% c("A", "B")))
+ps.org
+# Species in the mock community
 mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
     "Clostridium_perfringens", "Clostridium_saccharolyticum",
     "Fusobacterium_nucleatum", "Lactobacillus_plantarum",
     "Prevotella_melaninogenica", "Salmonella_enterica",
     "Vibrio_cholerae", "Yersinia_pseudotuberculosis")
+# denom for clr
 denom <- setdiff(mock_taxa, "Blautia_hansenii")
-ps.lr <- ps %>% 
-    transform_sample_counts(clr, denom = denom)
 ```
 
-Somehow, we'll have to deal with all the zeros---a fraction 
-`r mean(otu_table(ps) == 0)` of all abundances in the table.
-Let's get a table of the number of taxa with a given prevalance (ranging from
-0 to 3) within the three samples of each Individual.
+# Filtering
+
+Table of the number of taxa with a given prevalence (operationally defined as
+appearing in at least 10 reads; ranging from 0 to 3) within the three samples
+of each Individual.
 ```{r}
 tb <- ps %>% as_tibble
 taxa <- taxa_names(ps)
 tb0 <- tb %>%
-    gather(key = "Taxon", value = "RA", taxa)
+    gather(key = "Taxon", value = "Reads", taxa)
 tb1 <- tb0 %>% group_by(Individual, Taxon) %>%
-    summarize(Prev = sum(RA>0))
+    summarize(Prev = sum(Reads >= 10))
 tb2 <- tb1 %>%
     summarize(P0 = sum(Prev==0), P1 = sum(Prev==1),
         P2 = sum(Prev==2), P3 = sum(Prev==3)) 
@@ -79,14 +74,243 @@ print(tb2)
 Thus, for each individual there are a large number of taxa that are found by
 all three protocols, and most taxa within an individual are found by all three.
 
-Since there are no technical replicates, we can deal with zeros simply by
-throwing out all infinite biases at the end. Although I should consider if that
-might bias our results.
+
+We can use contamination in the mock community as a way to choose filtering
+thresholds.
+```{r}
+ps.mock <- ps %>%
+    subset_samples(Individual == "Mock-only") %>%
+    filter_taxa(function (x) sum(x) > 0, prune = T)
+tb.mock <- ps.mock %>% as_tibble
+sample_sums(ps.mock)
+
+# Table for plotting
+st <- otu_table(ps.mock) %>% 
+    transform_sample_counts(function (x) 1e6 * (x+1) / sum(x+1)) %>%
+    as_tibble
+tb0 <- st %>%
+    gather(key = "Taxon", value = "Reads", -Sample)
+```
+
+```{r}
+ggplot(tb0, aes(x = Reads)) + 
+    geom_histogram() +
+    scale_x_log10() +
+    geom_vline(xintercept = 500) +
+    facet_wrap(~Sample)
+```
+
+```{r}
+# List of top taxa across samples
+tb0 %>%
+    filter(Reads > 500) %$%
+    unique(Taxon)
+tb0 %>%
+    filter(Reads > 100) %>%
+    arrange(Reads)
+tb0 %>%
+    filter(Taxon %in% c("Blautia_hansenii", "Fusobacterium_nucleatum"))
+```
+Seems like we should definitely keep taxa whose reads form a fraction 
+`r 500/1e6` of the sample total, but below that is likely to be contamination
+or misclassification.
+
+When working within a single Individual, I'll keep all taxa that meet this
+threshold by either of the three protocols.
+
+# Get biases by pooling across Individuals
+
+Goal is to get bias estimates for as many taxa as possible.
+
+```{r}
+# For testing
+# mat <- otu_table(ps.mock) %>% as_tibble %>%
+#     select(mock_taxa) %>%
+#     as("matrix")
+# obs1 <- mat[1,]
+# obs2 <- mat[2,]
+
+# Compute bias posterior for a single observation from each protocol
+bias_post <- function (obs1, obs2, n = 128, denom = "all") {
+    p1.samples <- extraDistr::rdirichlet(n, 1 + obs1)
+    p2.samples <- extraDistr::rdirichlet(n, 1 + obs2)
+    colnames(p1.samples) <- names(obs1)
+    colnames(p2.samples) <- names(obs2)
+    clr1.samples <- p1.samples %>%
+        apply(1, clr, denom = denom) %>%
+        t
+    clr2.samples <- p2.samples %>%
+        apply(1, clr, denom = denom) %>%
+        t
+    clr1.samples - clr2.samples
+}
+
+# Function for looping over all individuals
+bias_post_ind <- function(ind, protocols, ps, n = 128) {
+    # Subset
+    sns <- sample_data(ps) %>% as_tibble %>%
+        filter(Individual == ind, Protocol %in% protocols) %>%
+        arrange(Protocol) %$%
+        Sample
+    st <- otu_table(ps)[sns, ]
+    # Filter
+    st.ra <- transform_sample_counts(st, function (x) x / sum(x))
+    taxa_pass <- filter_taxa(st.ra, function (x) any(x >= (500/1e6)))
+    taxa_pass[denom] <- TRUE # Make sure the mock makes it (should always)
+    st.filt <- st[, taxa_pass]
+    # Get posterior
+    obs1 <- st.filt[1,] %>% c
+    obs2 <- st.filt[2,] %>% c
+    names(obs1) <- taxa_names(st.filt)
+    names(obs2) <- taxa_names(st.filt)
+    bias.post <- bias_post(obs1, obs2, n = n, denom = denom)
+    # Tidy
+    tb <- bias.post %>%
+        as_tibble %>%
+        add_column(Individual = ind, .before = 1) %>%
+        gather(key = "Taxon", value = "Bias", -Individual)
+    tb
+}
+```
+
+```{r}
+# Compute for each individual and them combine
+individuals <- as.character(1:8)
+biasHW.post <- individuals %>%
+    map(bias_post_ind, c("H", "W"), ps) %>%
+    bind_rows
+biasQW.post <- individuals %>%
+    map(bias_post_ind, c("Q", "W"), ps) %>%
+    bind_rows
+bias.post <- bind_rows(list(HW = biasHW.post, QW = biasQW.post), 
+    .id = "Protocols")
+```
+
+Consider the variation in bias posteriors from different Individuals:
+```{r}
+bias.post %>%
+    filter(Taxon %in% mock_taxa) %>%
+    ggplot(aes(x = Taxon, y = Bias, color = Individual)) +
+    # geom_violin() +
+    ggthemes::geom_tufteboxplot(median.type = "line", 
+        whisker.type = 'line', hoffset = 0, size = 0.9) +
+    facet_wrap(~Protocols) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1),
+        axis.title.x = element_blank())
+```
+
+To get a point estimate, we can try simply taking the mean (or median) of the
+combined posteriors, weighting each Individual equally:
+```{r}
+bias <- bias.post %>%
+    group_by(Protocols, Taxon) %>%
+    summarize(Median = median(Bias), Mean = mean(Bias), SD = sd(Bias)) %>%
+    mutate(Median = Median - mean(Median), Mean = Mean - mean(Mean)) %>%
+    ungroup()
+bias %$% cor(Median, Mean)
+# TODO: Make sure the above centering calculation is doing what I want
+```
+
+
+## Bias trees
+
+```{r}
+library(ggtree)
+
+bias.HW <- bias %>% filter(Protocols == "HW") %>% select(-Protocols)
+bias.QW <- bias %>% filter(Protocols == "QW") %>% select(-Protocols)
+tax <- tax_table(ps) %>% as_tibble
+
+tree <- phy_tree(ps) %>% prune_taxa(bias$Taxon, .)
+ttree <- tidytree::as_data_frame(tree) %>%
+    left_join(bias.HW, by = c("label" = "Taxon")) %>%
+    left_join(bias.QW, by = c("label" = "Taxon"), suffix = c(".HW", ".QW")) %>%
+    left_join(tax, by = c("label" = "Taxon"))
+td <- tidytree::as.treedata(ttree)
+gt <- ggtree(td, layout = "circular")
+
+gt + geom_tippoint(aes(fill = Mean.HW, size = log10(1/SD.HW^2)), 
+    shape=21, color="black") +
+    scale_fill_gradient2(low="red", mid="white", high="blue") +
+    theme(legend.position='right')
+
+gt + geom_tippoint(aes(fill = Mean.QW, size = log10(1/SD.QW^2)), 
+    shape=21, color="black") +
+    scale_fill_gradient2(low="red", mid="white", high="blue") +
+    theme(legend.position='right')
+```
+
+```{r}
+gt <- ggtree(td, layout = "rectangular")
+gt + geom_tippoint(aes(fill = Mean.QW, size = log10(1/SD.QW^2)), 
+    shape=21, color="black") +
+    scale_fill_gradient2(low="red", mid="white", high="blue") +
+    theme(legend.position='right')
+```
+
+here. try to label key clades / species on the tree. play with formatting.
+
+```{r}
+gt <- ggtree(td, layout = "rectangular")
+
+gt + geom_tippoint(aes(fill = Genus), size = 3)
+
+gt + geom_tiplab(aes(label = Genus))
+
+gt + geom_cladelabel(node=45, label="test label")
+```
 
 
 ```{r}
-# st <- otu_table(ps.lr) %>% t %>% as_tibble
-# sam <- sample_table(ps.lr) %>% t %>% as_tibble
+# library(ggtree)
+
+tree <- phy_tree(ps) %>% prune_taxa(bias$Taxon, .)
+# tax <- tax_table(ps) %>% as_tibble
+# ttree <- tidytree::as_data_frame(tree) %>%
+#     left_join(tax, by = c("label" = "Taxon"))
+# td <- tidytree::as.treedata(ttree)
+# gt <- ggtree(td, layout = "circular")
+gt <- ggtree(tree, layout = "circular")
+
+gt + geom_tiplab(aes(angle = angle))
+```
+
+Here.
+
+## Bias versus phylogenetic distance
+
+```{r}
+phyd <- ape::cophenetic.phylo(tree) %>% 
+    as.dist(diag = FALSE, upper = FALSE) %>%
+    {broom::tidy(.)} %>% 
+    as_tibble %>%
+    rename(Taxon1 = item1, Taxon2 = item2,
+        Phy_dist = distance)
+phyd0 <- phyd %>%
+    left_join(select(bias.HW, Taxon1 = Taxon, Bias1 = Mean), by = "Taxon1") %>%
+    left_join(select(bias.HW, Taxon2 = Taxon, Bias2 = Mean), by = "Taxon2") %>%
+    mutate(Bias_dist = abs(Bias1 - Bias2))
+```
+
+```{r}
+phyd1 <- phyd0 %>%
+    filter(Phy_dist < 2)
+phyd1 %$% cor(Phy_dist, Bias_dist, use = "complete.obs")
+ggplot(phyd1, aes(x = Phy_dist, y = Bias_dist)) +
+    geom_jitter()
+```
+
+# (OLD) Bias versus phylogeny
+
+## Get biases within each individual
+
+For calculating biases, we want to take a log-ratio transform with the mock
+taxa as the denominator. We'll exclude Blautia hansenii from the denominator
+due to the presence of zero counts in several samples.
+```{r}
+denom <- setdiff(mock_taxa, "Blautia_hansenii")
+ps.lr <- ps.org %>% 
+    transform_sample_counts(clr, denom = denom)
 ```
 
 Estimate biases relative to protocol W. Do so by calculating for each
@@ -114,15 +338,13 @@ biases <- tb1 %>%
 ```{r}
 ```
 
-# Is bias consistent across individuals?
+Is bias consistent across individuals?
 
-
-# Bias versus phylogeny
 
 ## Difference in bias versus phylogenetic distance
 
 ```{r}
-tree <- phy_tree(ps) %>% prune_taxa(biases$Taxon, .)
+tree <- phy_tree(ps.lr) %>% prune_taxa(biases$Taxon, .)
 phyd <- ape::cophenetic.phylo(tree) %>% 
     as.dist(diag = FALSE, upper = FALSE) %>%
     {broom::tidy(.)} %>% 
@@ -158,9 +380,8 @@ Other things could ask:
 
 ```{r}
 library(ggtree)
-library(tidytree)
 
-tree <- phy_tree(ps) %>% prune_taxa(biases$Taxon, .)
+tree <- phy_tree(ps.lr) %>% prune_taxa(biases$Taxon, .)
 biases <- biases %>%
     mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
 ttree <- tidytree::as_data_frame(tree) %>%
@@ -177,7 +398,7 @@ qplot(biases$BiasHW)
 ```
 
 ```{r}
-td <- as.treedata(ttree)
+td <- tidytree::as.treedata(ttree)
 gt <- ggtree(td, layout = "circular")
 
 med <- median(ttree$bBiasHW, na.rm=TRUE)
@@ -198,10 +419,10 @@ gt + geom_tippoint(aes(fill = bBiasQW), shape=21, color="black", size = 3.5) +
 Let's look at just Bacteroides.
 ```{r, eval=F}
 # ttree0 <- ttree %>%
-#     full_join(tax_table(ps) %>% as_tibble %>% rename(label = Taxon), by = "label")
-bacteroides_species <- taxa_names(ps) %>%
+#     full_join(tax_table(ps.lr) %>% as_tibble %>% rename(label = Taxon), by = "label")
+bacteroides_species <- taxa_names(ps.lr) %>%
     str_subset("Bacteroides.*")
-ps0 <- prune_taxa(bacteroides_species, ps)
+ps0 <- prune_taxa(bacteroides_species, ps.lr)
 tree <- phy_tree(ps0) %>% prune_taxa(biases$Taxon, .)
 biases <- biases %>%
     mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
@@ -214,16 +435,10 @@ gt + geom_tippoint(aes(fill = bBiasHW), shape=21, color="black", size = 3.5) +
     scale_fill_gradient2(midpoint = med, 
         low="red", mid="white", high="blue") + geom_tiplab() + 
     theme(legend.position = 'right')
-```
-
-The outlier is a case of a negative infinite bias result that was set to the
-lower bound. `Bacteroides_plebeius`
-```{r}
+# The outlier is a case of a negative infinite bias result that was set to the
+# lower bound. `Bacteroides_plebeius`
 biases %>% filter(Taxon %in% bacteroides_species) %>% print(n = 24)
 # 16 Bacteroides_plebeius         -Inf       2.68   -4.98    2.68
-```
-
-```{r}
 tb1 %>% filter(Taxon %in% "Bacteroides_plebeius")
 ```
 From this, we can see that the inference of a negative bias is probably
