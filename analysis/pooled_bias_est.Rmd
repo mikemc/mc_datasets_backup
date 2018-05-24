@@ -240,7 +240,7 @@ gt + geom_tippoint(aes(fill = Mean.QW, size = log10(1/SD.QW^2)),
     theme(legend.position='right')
 ```
 
-```{r}
+```{r, fig.widgth = 8, fig.height = 10}
 gt <- ggtree(td, layout = "rectangular")
 gt + geom_tippoint(aes(fill = Mean.QW, size = log10(1/SD.QW^2)), 
     shape=21, color="black") +
@@ -250,18 +250,18 @@ gt + geom_tippoint(aes(fill = Mean.QW, size = log10(1/SD.QW^2)),
 
 here. try to label key clades / species on the tree. play with formatting.
 
-```{r}
+```{r, eval = F}
 gt <- ggtree(td, layout = "rectangular")
 
 gt + geom_tippoint(aes(fill = Genus), size = 3)
 
-gt + geom_tiplab(aes(label = Genus))
+gt + geom_tiplab(aes(label = Species))
 
-gt + geom_cladelabel(node=45, label="test label")
+# gt + geom_cladelabel(node=45, label="test label")
 ```
 
 
-```{r}
+```{r, eval = F}
 # library(ggtree)
 
 tree <- phy_tree(ps) %>% prune_taxa(bias$Taxon, .)
@@ -275,11 +275,66 @@ gt <- ggtree(tree, layout = "circular")
 gt + geom_tiplab(aes(angle = angle))
 ```
 
-Here.
+### For poster
+
+```{r, eval = F}
+ggplot(bias.QW, aes(x = Median, y = SD)) + geom_jitter()
+ggplot(bias.QW, aes(x = Mean, y = Median)) + geom_jitter()
+# Could prune below certain SD
+
+# Get the MRCA node for the lower half large clade
+two_taxa <- tax %>% 
+    filter(Genus %in% c("Bacteroides", "Bifidobacterium")) %>%
+    group_by(Genus) %>%
+    sample_n(1) %$%
+    Taxon
+```
+
+HERE. Next, is to further prune the tree to just the taxa with bias estimates,
+and to label certain clades to comment on. Might also want to remove high SD
+tips.
+
+```{r}
+tree <- phy_tree(ps) %>% prune_taxa(bias.QW$Taxon, .)
+mrca_node <- ape::getMRCA(tree, two_taxa)
+tree0 <- ape::extract.clade(tree, mrca_node)
+# Remove taxa with highly uncertain bias estimates
+high_sd_taxa <- bias.QW %>%
+    filter(SD > 1.2) %$%
+    Taxon
+tree1 <- ape::drop.tip(tree0, high_sd_taxa)
+
+# Plot with ggtree
+ttree <- tidytree::as_data_frame(tree1) %>%
+    left_join(bias.QW, by = c("label" = "Taxon")) %>%
+    left_join(tax, by = c("label" = "Taxon"))
+td <- tidytree::as.treedata(ttree)
+gt <- ggtree(td, layout = "rectangular")
+
+g <- gt + geom_tippoint(aes(fill = Mean - mean(Mean, na.rm = T)), 
+    shape=21, color="black", size = 3) +
+    # scale_fill_gradient() +
+    scale_fill_distiller(type = "seq", palette = 1) +
+    # scale_fill_distiller(type = "div", palette = 1) +
+    # scale_fill_gradient2() +
+    # scale_fill_gradientn(colors = c("#d73027", "#ffffbf", "#313695")) +
+    # scale_fill_gradientn(colors = c("#e41a1c", "#377eb8", "#4daf4a")) + 
+    theme(legend.position='right') +
+    labs(fill = "Bias")
+ggsave("/tmp/bias_tree_QW.pdf", g, width = 6, height = 8, units = "in")
+ggsave("/tmp/bias_tree_QW0.svg", g, width = 6, height = 8, units = "in")
+ggsave("/tmp/bias_tree_QW1.svg", g, width = 6, height = 8, units = "in", scale = 4/3)
+ggsave("/tmp/bias_tree_QW2.svg", g, width = 6, height = 8, units = "in",
+    device = grDevices::svg)
+# For some reason, needs a 4/3 scaling for the svg to come out to the correct
+# size. Not sure how this affects the font size
+```
+
+
 
 ## Bias versus phylogenetic distance
 
-```{r}
+```{r, eval = F}
 phyd <- ape::cophenetic.phylo(tree) %>% 
     as.dist(diag = FALSE, upper = FALSE) %>%
     {broom::tidy(.)} %>% 
@@ -292,7 +347,7 @@ phyd0 <- phyd %>%
     mutate(Bias_dist = abs(Bias1 - Bias2))
 ```
 
-```{r}
+```{r, eval = F}
 phyd1 <- phyd0 %>%
     filter(Phy_dist < 2)
 phyd1 %$% cor(Phy_dist, Bias_dist, use = "complete.obs")
