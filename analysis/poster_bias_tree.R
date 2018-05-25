@@ -131,12 +131,13 @@ ttree <- tidytree::as_data_frame(tree1) %>%
 td <- tidytree::as.treedata(ttree)
 bias_mean <- mean(ttree$Mean, na.rm = T)
 bias_range <- range(ttree$Mean, na.rm = T) - bias_mean
+# bias_range <- c(-3.9, 3.9)
 
 # Get Genus MRCAs
 # taxa <- ttree %>% filter(Genus == "Bacteroides") %$% label
 # bacteroides <- ape::getMRCA(td@phylo, taxa)
-genera <- list("Bacteroides", "Prevotella", "Bifidobacterium", "Alistipes",
-    "Parabacteroides", )
+taxa <- list("Bacteroides", "Prevotella", "Bifidobacterium", "Alistipes",
+    "Parabacteroides")
 mrcas <- taxa %>%
     map(~ filter(ttree, Genus == .) %$% label %>% ape::getMRCA(td@phylo, .))
 names(mrcas) <- taxa
@@ -155,9 +156,8 @@ gt + geom_tiplab(aes(label = label), angle = -90) + geom_nodelab(aes(label = nod
 gt + geom_tippoint(aes(fill = Mean - bias_mean), 
     shape=21, color="black", size = 4) +
     scale_fill_distiller(type = "seq", palette = 1, 
-        limits = bias_range %>% round(digits=1),
-        # breaks = sort(c(bias_range, -2, 0, 2)) %>% round(digits=1)) +
-        breaks = sort(c(bias_range, 0)) %>% round(digits=1)) +
+        limits = c(-4, 4),
+        breaks = seq(-4, 4, 2)) +
     geom_strip(37, 36, "Bacteroides", align = F, offset = -0.08, 
         hjust = 0.5, offset.text = -0.15, barsize = line_size,
         family = "Cantarell", fontsize=8.4375) +
@@ -179,12 +179,12 @@ gt + geom_tippoint(aes(fill = Mean - bias_mean),
     geom_cladelabel(104, "Enterobacteriaceae", offset = -0.1, 
         hjust = 0.5, offset.text = -0.15, barsize = line_size,
         family = "Cantarell", fontsize=8.4375) +
-    labs(fill = "Bias") +
+    labs(fill = "(Log2) Bias") +
     theme(text = element_text(family = "Cantarell"),
         legend.position=c(0.9, 0.75),
         legend.direction = "vertical", 
-        legend.title = element_text(size=24*4/3),
-        legend.text = element_text(size=18*4/3),
+        legend.title = element_text(size=18*4/3),
+        legend.text = element_text(size=14.4*4/3),
         legend.key.height = unit(3, "line"))
 ggsave("/tmp/bias_tree_QW.svg", width = 13, height = 7, units = "in", scale = 4/3)
 # ggsave("/tmp/bias_tree_QW0.svg", width = 13*4/3, height = 7*4/3, units = "in")
@@ -192,11 +192,11 @@ ggsave("/tmp/bias_tree_QW.svg", width = 13, height = 7, units = "in", scale = 4/
 # fontsize specified to ggtree gets multiplied by 2.133333
 
 # theme_update(text = element_text(family = "Cantarell", size=18))
-my_theme <- theme(text = element_text(family = "Cantarell"),
-    legend.position=c(0.9, 0.85),
-    legend.direction = "vertical", 
-    legend.title = element_text(size=24),
-    legend.text = element_text(size=18))
+# my_theme <- theme(text = element_text(family = "Cantarell"),
+#     legend.position=c(0.9, 0.85),
+#     legend.direction = "vertical", 
+#     legend.title = element_text(size=24),
+#     legend.text = element_text(size=18))
 
 ###########
 gt <- ggtree(td, layout = "rectangular")
