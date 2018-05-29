@@ -304,7 +304,8 @@ p <- ggplot(tb.aa, aes(x = Clostridium_difficile, y = Protocol,
         color = Calibrated, shape = Set)) +
     geom_vline(xintercept = cdiff_density, color = "grey", size = 1.2) +
     geom_jitter(height = 0.1, width = 0, size = 2.1, stroke = 1.5) +
-    scale_x_log10() +
+    scale_x_log10(breaks = c(1e6, 1e7, 1e8),
+        labels = c(quote(10^6), quote(10^7), quote(10^8))) +
     scale_shape_manual(breaks = c("Est", "Eval"), values = c(1, 16)) +
     # annotate("text", x = cdiff_density, y = Inf, label = "True abundance",
     #     vjust = -0.5) +
