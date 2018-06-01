@@ -25,6 +25,8 @@ options(width=100)
 library(phyloseq)
 library(tidyverse)
 library(magrittr)
+library(ggtree)
+library(ggthemes)
 
 ## Source bias estimation functions
 devtools::load_all("~/active_research/src/metacal")
@@ -215,8 +217,6 @@ bias %$% cor(Median, Mean)
 ## Bias trees
 
 ```{r}
-library(ggtree)
-
 bias.HW <- bias %>% filter(Protocols == "HW") %>% select(-Protocols)
 bias.QW <- bias %>% filter(Protocols == "QW") %>% select(-Protocols)
 tax <- tax_table(ps) %>% as_tibble
@@ -355,148 +355,207 @@ ggplot(phyd1, aes(x = Phy_dist, y = Bias_dist)) +
     geom_jitter()
 ```
 
-# (OLD) Bias versus phylogeny
+# Pooled bias estimation with Stan
 
-## Get biases within each individual
-
-For calculating biases, we want to take a log-ratio transform with the mock
-taxa as the denominator. We'll exclude Blautia hansenii from the denominator
-due to the presence of zero counts in several samples.
-```{r}
-denom <- setdiff(mock_taxa, "Blautia_hansenii")
-ps.lr <- ps.org %>% 
-    transform_sample_counts(clr, denom = denom)
-```
-
-Estimate biases relative to protocol W. Do so by calculating for each
-Individual, and then for each taxon, take the median of the biases seen across
-individuals (dropping NA's, which correspond to absence in protocol W for that
-individual).
-```{r}
-tb <- ps.lr %>% as_tibble
-# Get the biases as the diff from W
-tb0 <- tb %>%
-    select(Individual, Protocol, taxa) %>%
-    gather(key = "Taxon", value = "LR", taxa) %>%
-    spread(key = Protocol, value = "LR") %>%
-    mutate(BiasHW = H - W, BiasQW = Q - W)
-# NOTE: this tibble (tb0) will be useful for examining consistency
-# Filter rows where biases are NA. Should only happen b/c species not found by
-# Q protocol.
-tb1 <- tb0 %>% filter(!(is.na(BiasHW) | is.na(BiasQW)))
-biases <- tb1 %>%
-    group_by(Taxon) %>%
-    summarize(BiasHW = median(BiasHW, na.rm=TRUE), 
-        BiasQW = median(BiasQW, na.rm=TRUE))
-```
+## Estimate biases for protocols Q:W
 
 ```{r}
+## Load data
+git_path <- file.path("~/active_research/metagenomics_calibration")
+data_path <- file.path(git_path, "costea2017", "data")
+ps <- readRDS(file.path(data_path, "2018-05-22_phase3_phyloseq_reads.Rds")) %>%
+    subset_samples(Protocol %in% c("Q", "W")) %>%
+    subset_samples(Individual %in% as.character(1:8))
+ps.ra <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds")) %>%
+    subset_samples(Protocol %in% c("Q", "W")) %>%
+    subset_samples(Individual %in% as.character(1:8)) %>%
+    transform_sample_counts(function (x) x / sum(x))
+setequal(taxa_names(ps), taxa_names(ps.ra))
+mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
+    "Clostridium_perfringens", "Clostridium_saccharolyticum",
+    "Fusobacterium_nucleatum", "Lactobacillus_plantarum",
+    "Prevotella_melaninogenica", "Salmonella_enterica",
+    "Vibrio_cholerae", "Yersinia_pseudotuberculosis")
 ```
 
-Is bias consistent across individuals?
+Select taxa to use based on relative abundances. For now, be stringent to speed
+up run times.
+```{r}
+filter_taxa(ps.ra, function(x) max(x) > 1e-3) %>% sum
+to_keep <- filter_taxa(ps.ra, function(x) max(x) > 1e-3)
+ps0 <- prune_taxa(to_keep, ps)
+all(mock_taxa %in% taxa_names(ps0))
+```
 
+Or filter based on the normalized of reads being above the threshold
+I identified.
+```{r}
+ps.normed <- transform_sample_counts(ps, function (x) x / sum(x) * 1e6)
+filter_taxa(ps.normed, function(x) max(x) > 500) %>% sum
+```
 
-## Difference in bias versus phylogenetic distance
+Alternatively, filter to the subtree I used in my poster, plus the mock
+community.
+```{r}
+# MRCA node for the lower half:
+tax <- tax_table(ps) %>% as_tibble
+two_taxa <- tax %>% 
+    filter(Genus %in% c("Bacteroides", "Bifidobacterium")) %>%
+    group_by(Genus) %>%
+    sample_n(1) %$%
+    Taxon
+tree <- phy_tree(ps)
+mrca_node <- ape::getMRCA(tree, two_taxa)
+taxa <- tree %>%
+    ape::extract.clade(mrca_node) %$%
+    tip.label
+# See which are also minimally frequent
+to_keep <- filter_taxa(ps.ra, function(x) max(x) > 1e-3)
+taxa_freq <- names(to_keep)[to_keep]
+intersect(taxa, taxa_freq) %>% length
+# Seems like a reasonable amount.
+taxa <- intersect(taxa, taxa_freq) %>%
+    union(mock_taxa)
+ps1 <- prune_taxa(intersect(taxa, taxa_freq), ps)
+```
+
+```{r, eval = F}
+## get observed count tables
+sam <- sample_data(ps0) %>% as_tibble %>%
+    arrange(Protocol, Individual) %>%
+    select(-Run_accession)
+tb <- sam %>%
+    spread(key = Protocol, value = Sample)
+st <- otu_table(ps0)
+observed_tar <- st[tb$Q,]
+observed_ref <- st[tb$W,]
+## fit model
+dat <- list(K = ntaxa(ps0),
+    N = nrow(observed_tar),
+    observed_tar = observed_tar,
+    observed_ref = observed_ref,
+    pscale_alpha = 5000,
+    pscale_sigma = 5)
+start.time <- Sys.time()
+fit <- stan(file = file.path(stan_path, "dirmult_diff_costea.stan"),
+        data = dat, iter = 2000, chains = 4)
+stop.time <- Sys.time()
+saveRDS(fit, file.path(data_path, prepend_date("bias_stan.Rds")))
+```
 
 ```{r}
-tree <- phy_tree(ps.lr) %>% prune_taxa(biases$Taxon, .)
-phyd <- ape::cophenetic.phylo(tree) %>% 
-    as.dist(diag = FALSE, upper = FALSE) %>%
-    {broom::tidy(.)} %>% 
-    as_tibble %>%
-    rename(Taxon1 = item1, Taxon2 = item2,
-        Phy_dist = distance)
-# summary(phyd$distance)
-# bias_vector <- biases$BiasHW
-# names(bias_vector) <- biases$Taxon
-# bd <- dist(bias_vector, diag = TRUE, upper = TRUE) %>%
-#     {broom::tidy(.)} %>% 
-#     as_tibble
-phyd0 <- phyd %>%
-    left_join(select(biases, Taxon1 = Taxon, Bias1 = BiasHW), by = "Taxon1") %>%
-    left_join(select(biases, Taxon2 = Taxon, Bias2 = BiasHW), by = "Taxon2") %>%
-    mutate(Bias_dist = abs(Bias1 - Bias2))
+fit <- readRDS(fit, file.path(data_path, prepend_date("bias_stan.Rds")))
+# precis(fit, depth = 1)
+# stan_plot(fit, pars = c("true_freqs"))
+# stan_plot(fit, pars = c("diff_log_bias"))
+# stan_dens(fit, pars = c("diff_log_bias"))
+
+# tb.p <- precis(fit, pars = c("diff_log_bias"), depth = 2)@output %>%
+#     as_tibble %>%
+#     add_column(Taxon = colnames(observed_tar), .before=1)
+# print(tb.p)
 ```
 
-```{r}
-phyd1 <- phyd0 %>%
-    filter(Phy_dist < 2)
-ggplot(phyd1, aes(x = Phy_dist, y = Bias_dist)) +
-    geom_jitter()
-```
+## Visualize on tree
 
-__TODO:__ redo this with bounded biases
+How to make a tree with bias posterior intervals lined up with the tips. There
+are ways I can see doing this. First,
 
-Other things could ask:
-* are most closely related pairs more similar bias-wise than random pairs.
+#. Get the data frame stan_plot
+#. Change the y value to that in the ggtree object
+#. Shift all the x values by the need offset
+#. plot the layers from the stan_plot onto the ggtree
 <!--  -->
 
-## Bias trees
+Second would be to use the posterior and pass the data to a vertical boxplot
+geom.
+
+
+TODO: scale down the bias numbers to take a smaller range
+
+```{r, eval = F}
+# Get the tree
+gt <- phy_tree(ps0) %>% ggtree(layout = "rectangular")
+# create a data frame for plotting biases
+p <- stan_plot(fit, pars = c("diff_log_bias"))
+td <- p$data %>%
+    as_tibble %>%
+    add_column(taxa = taxa_names(ps0), .before = 1) %>%
+    select(-params, -y)
+# Offset and scale the bias values
+x_scale <- 2/5
+x_offset <- 8
+f <- function (x) {x * x_scale + x_offset}
+td <- td %>%
+    mutate_at(2:7, f)
+# Plot the tree with biases
+g <- gt %<+% td + 
+    geom_segment(aes(x = x, xend = Inf, y = y, yend = y),
+        data = filter(gt$data, isTip),
+        linetype = "dotted") +
+    p$layers
+```
 
 ```{r}
-library(ggtree)
+gt <- phy_tree(ps0) %>% ggtree(layout = "rectangular")
+p <- stan_plot(fit, pars = c("diff_log_bias"))
+td <- p$data %>%
+    as_tibble %>%
+    add_column(taxa = taxa_names(ps0), .before = 1) %>%
+    select(-params, -y)
+gt0 <- gt %<+% td 
+gt1 <- gt0 + 
+    geom_tiplab(align = TRUE, linetype = "dotted", linesize = 0.3, color = "black") + 
+    xlim(0, 6.9)
+p0 <- ggplot(data = filter(gt0$data, isTip), 
+    mapping = aes(x = m, y = y, yend = y)) + 
+    geom_hline(aes(yintercept = y), size = 0.3, 
+        color = "black", linetype = "dotted") +
+    geom_segment(aes(x = ll, xend = hh), 
+        size = 0.6) + 
+    geom_segment(aes(x = l, xend = h),
+        size = 1.5, color = "#e41a1c") + 
+    geom_point(aes(x = m, y = y), size = 2) + 
+    theme_classic() +
+    theme(axis.line.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+    xlab("(Log2) Bias")
 
-tree <- phy_tree(ps.lr) %>% prune_taxa(biases$Taxon, .)
-biases <- biases %>%
-    mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
-ttree <- tidytree::as_data_frame(tree) %>%
-    left_join(rename(biases, label = Taxon), by = "label")
-
-# This fails; possibly a bug
-# ttree0 <- ttree %>%
-#     mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
-# td <- as.treedata(ttree0)
+gtab <- egg::ggarrange(plots = list(gt1, p0), nrow = 1, clip = "on", widths = c(2, 1))
 ```
 
-```{r, eval=F}
-qplot(biases$BiasHW)
-```
-
+Do this with the subtree that includes the mock and the ASM poster clades.
 ```{r}
-td <- tidytree::as.treedata(ttree)
-gt <- ggtree(td, layout = "circular")
+gt <- phy_tree(ps1) %>% ggtree(layout = "rectangular")
+p <- stan_plot(fit, pars = c("diff_log_bias"))
+td <- p$data %>%
+    as_tibble %>%
+    add_column(taxa = taxa_names(ps0), .before = 1) %>%
+    select(-params, -y)
+gt0 <- gt %<+% td 
+gt1 <- gt0 + 
+    geom_tiplab(align = TRUE, linetype = "dotted", linesize = 0.3, color = "black") + 
+    xlim(0, 6.9)
+p0 <- ggplot(data = filter(gt0$data, isTip), 
+    mapping = aes(x = m, y = y, yend = y)) + 
+    geom_hline(aes(yintercept = y), size = 0.3, 
+        color = "black", linetype = "dotted") +
+    geom_segment(aes(x = ll, xend = hh), 
+        size = 0.6) + 
+    geom_segment(aes(x = l, xend = h),
+        size = 1.5, color = "#e41a1c") + 
+    geom_point(aes(x = m, y = y), size = 2) + 
+    theme_classic() +
+    theme(axis.line.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+    xlab("(Log2) Bias")
 
-med <- median(ttree$bBiasHW, na.rm=TRUE)
-gt + geom_tippoint(aes(fill = bBiasHW), shape=21, color="black", size = 3.5) +
-    scale_fill_gradient2(midpoint = med, 
-        low="red", mid="white", high="blue") +
-    theme(legend.position='right')
+gtab0 <- egg::ggarrange(plots = list(gt0, p0), nrow = 1, clip = "on", widths = c(2, 1))
+gtab1 <- egg::ggarrange(plots = list(gt1, p0), nrow = 1, clip = "on", widths = c(2, 1))
 
-med <- median(ttree$bBiasQW, na.rm=TRUE)
-gt + geom_tippoint(aes(fill = bBiasQW), shape=21, color="black", size = 3.5) +
-    scale_fill_gradient2(midpoint = med, 
-        low="red", mid="white", high="blue") +
-    theme(legend.position='right')
 ```
 
-### Investigating outliers
-
-Let's look at just Bacteroides.
-```{r, eval=F}
-# ttree0 <- ttree %>%
-#     full_join(tax_table(ps.lr) %>% as_tibble %>% rename(label = Taxon), by = "label")
-bacteroides_species <- taxa_names(ps.lr) %>%
-    str_subset("Bacteroides.*")
-ps0 <- prune_taxa(bacteroides_species, ps.lr)
-tree <- phy_tree(ps0) %>% prune_taxa(biases$Taxon, .)
-biases <- biases %>%
-    mutate(bBiasHW = bound(BiasHW), bBiasQW = bound(BiasQW))
-ttree <- tidytree::as_data_frame(tree) %>%
-    left_join(rename(biases, label = Taxon), by = "label")
-td <- as.treedata(ttree)
-gt <- ggtree(td, layout = "rectangular")
-med <- median(ttree$bBiasHW, na.rm=TRUE)
-gt + geom_tippoint(aes(fill = bBiasHW), shape=21, color="black", size = 3.5) +
-    scale_fill_gradient2(midpoint = med, 
-        low="red", mid="white", high="blue") + geom_tiplab() + 
-    theme(legend.position = 'right')
-# The outlier is a case of a negative infinite bias result that was set to the
-# lower bound. `Bacteroides_plebeius`
-biases %>% filter(Taxon %in% bacteroides_species) %>% print(n = 24)
-# 16 Bacteroides_plebeius         -Inf       2.68   -4.98    2.68
-tb1 %>% filter(Taxon %in% "Bacteroides_plebeius")
-```
-From this, we can see that the inference of a negative bias is probably
-incorrect. In the two cases where it was found by protocol H, the bias was in
-fact positive. But since detection was less likely in H, than W, we end up with
-more `-Inf`'s which lead to a median of `-Inf`.
