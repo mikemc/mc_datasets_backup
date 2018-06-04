@@ -366,6 +366,7 @@ data_path <- file.path(git_path, "costea2017", "data")
 ps <- readRDS(file.path(data_path, "2018-05-22_phase3_phyloseq_reads.Rds")) %>%
     subset_samples(Protocol %in% c("Q", "W")) %>%
     subset_samples(Individual %in% as.character(1:8))
+ps.r <- transform_sample_counts(ps, function (x) x / sum(x))
 ps.ra <- readRDS(file.path(data_path, "phase3_phyloseq_with_tree.Rds")) %>%
     subset_samples(Protocol %in% c("Q", "W")) %>%
     subset_samples(Individual %in% as.character(1:8)) %>%
@@ -378,58 +379,61 @@ mock_taxa <- c("Blautia_hansenii", "Clostridium_difficile",
     "Vibrio_cholerae", "Yersinia_pseudotuberculosis")
 ```
 
-Select taxa to use based on relative abundances. For now, be stringent to speed
-up run times.
+First, filter to taxa that show up in a minimum (relative) number of reads,
+below which is likely contamination, and a minimum relative abundance.
 ```{r}
-filter_taxa(ps.ra, function(x) max(x) > 1e-3) %>% sum
-to_keep <- filter_taxa(ps.ra, function(x) max(x) > 1e-3)
-ps0 <- prune_taxa(to_keep, ps)
-all(mock_taxa %in% taxa_names(ps0))
+filter_taxa(ps.r, function(x) max(x) > 5e-4) %>% sum
+ps0 <- ( filter_taxa(ps.r, function(x) max(x) > 5e-4) & 
+    filter_taxa(ps.ra, function(x) max(x) > 5e-4) ) %>%
+    prune_taxa(ps)
+tax <- tax_table(ps0) %>% as_tibble
+filter(tax, Class == "Gammaproteobacteria")
+```
+But, assume that for a taxon to be present in an individual, it must show up in
+at least a fraction 5e-4 of all reads.
+```{r}
+taxa <- taxa_names(ps0)
+tb <- ps.r %>% as_tibble %>% select(Individual, taxa)
+tb0 <- tb %>%
+    group_by(Individual) %>%
+    summarize_at(taxa, ~max(.) > 5e-4)
+corner(tb0)
+# Matrix for screening out taxa from individuals
+screen_mat <- as(select(tb0, taxa), "matrix")
+```
+Next, get observed count tables.
+```{r}
+tb <- ps0 %>% as_tibble %>%
+    select(Protocol, Individual, taxa) %>%
+    arrange(Protocol, Individual)
+# corner(tb)
+observed_tar <- tb %>% 
+    filter(Protocol == "Q") %>%
+    select(taxa) %>%
+    as("matrix")
+observed_ref <- tb %>% 
+    filter(Protocol == "W") %>%
+    select(taxa) %>%
+    as("matrix")
+corner(observed_tar, 5, 4)
+corner(observed_ref, 5, 4)
+## Screen out taxa 
+observed_tar <- observed_tar * screen_mat
+observed_ref <- observed_ref * screen_mat
+corner(observed_tar, 5, 4)
+corner(observed_ref, 5, 4)
 ```
 
-Or filter based on the normalized of reads being above the threshold
-I identified.
+Debugging
 ```{r}
-ps.normed <- transform_sample_counts(ps, function (x) x / sum(x) * 1e6)
-filter_taxa(ps.normed, function(x) max(x) > 500) %>% sum
+# prevotella <- str_subset(colnames(observed_tar), "Prevotella")
+# observed_tar[,prevotella]
+# observed_ref[,prevotella]
 ```
 
-Alternatively, filter to the subtree I used in my poster, plus the mock
-community.
-```{r}
-# MRCA node for the lower half:
-tax <- tax_table(ps) %>% as_tibble
-two_taxa <- tax %>% 
-    filter(Genus %in% c("Bacteroides", "Bifidobacterium")) %>%
-    group_by(Genus) %>%
-    sample_n(1) %$%
-    Taxon
-tree <- phy_tree(ps)
-mrca_node <- ape::getMRCA(tree, two_taxa)
-taxa <- tree %>%
-    ape::extract.clade(mrca_node) %$%
-    tip.label
-# See which are also minimally frequent
-to_keep <- filter_taxa(ps.ra, function(x) max(x) > 1e-3)
-taxa_freq <- names(to_keep)[to_keep]
-intersect(taxa, taxa_freq) %>% length
-# Seems like a reasonable amount.
-taxa <- intersect(taxa, taxa_freq) %>%
-    union(mock_taxa)
-ps1 <- prune_taxa(intersect(taxa, taxa_freq), ps)
-```
 
-```{r, eval = F}
-## get observed count tables
-sam <- sample_data(ps0) %>% as_tibble %>%
-    arrange(Protocol, Individual) %>%
-    select(-Run_accession)
-tb <- sam %>%
-    spread(key = Protocol, value = Sample)
-st <- otu_table(ps0)
-observed_tar <- st[tb$Q,]
-observed_ref <- st[tb$W,]
-## fit model
+Fit the model
+```{r}
 dat <- list(K = ntaxa(ps0),
     N = nrow(observed_tar),
     observed_tar = observed_tar,
@@ -440,12 +444,13 @@ start.time <- Sys.time()
 fit <- stan(file = file.path(stan_path, "dirmult_diff_costea.stan"),
         data = dat, iter = 2000, chains = 4)
 stop.time <- Sys.time()
-saveRDS(fit, file.path(data_path, prepend_date("bias_stan.Rds")))
+# saveRDS(fit, file.path(data_path, prepend_date("bias_stan.Rds")))
+
+precis(fit, depth = 1)
 ```
 
 ```{r}
 fit <- readRDS(fit, file.path(data_path, prepend_date("bias_stan.Rds")))
-# precis(fit, depth = 1)
 # stan_plot(fit, pars = c("true_freqs"))
 # stan_plot(fit, pars = c("diff_log_bias"))
 # stan_dens(fit, pars = c("diff_log_bias"))
@@ -455,6 +460,7 @@ fit <- readRDS(fit, file.path(data_path, prepend_date("bias_stan.Rds")))
 #     add_column(Taxon = colnames(observed_tar), .before=1)
 # print(tb.p)
 ```
+
 
 ## Visualize on tree
 
@@ -526,9 +532,29 @@ p0 <- ggplot(data = filter(gt0$data, isTip),
 gtab <- egg::ggarrange(plots = list(gt1, p0), nrow = 1, clip = "on", widths = c(2, 1))
 ```
 
-Do this with the subtree that includes the mock and the ASM poster clades.
+
+Reduced subset of taxa for plotting:
 ```{r}
-gt <- phy_tree(ps1) %>% ggtree(layout = "rectangular")
+# MRCA node for the lower half:
+tax <- tax_table(ps0) %>% as_tibble
+two_taxa <- tax %>% 
+    filter(Genus %in% c("Bacteroides", "Bifidobacterium")) %>%
+    group_by(Genus) %>%
+    sample_n(1) %$%
+    Taxon
+# Prune to the lower half (+ the mock) and just the taxa with bias estimates
+tree <- phy_tree(ps0)
+mrca_node <- ape::getMRCA(tree, two_taxa)
+taxa <- tree %>%
+    ape::extract.clade(mrca_node) %$%
+    tip.label %>%
+    union(mock_taxa)
+```
+
+```{r}
+gt <- phy_tree(ps0) %>% 
+    prune_taxa(taxa, .) %>%
+    ggtree(layout = "rectangular")
 p <- stan_plot(fit, pars = c("diff_log_bias"))
 td <- p$data %>%
     as_tibble %>%
@@ -556,6 +582,15 @@ p0 <- ggplot(data = filter(gt0$data, isTip),
 
 gtab0 <- egg::ggarrange(plots = list(gt0, p0), nrow = 1, clip = "on", widths = c(2, 1))
 gtab1 <- egg::ggarrange(plots = list(gt1, p0), nrow = 1, clip = "on", widths = c(2, 1))
-
 ```
 
+
+Debugging
+```{r}
+tb <- td %>%
+    filter(taxa %in% mock_taxa)
+mock_mean <- mean(tb$mean)
+tb %>%
+    mutate_at(2:7, ~ . - mock_mean)
+
+```

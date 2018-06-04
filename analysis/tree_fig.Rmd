@@ -102,7 +102,7 @@ sam.truth <- data.frame(Protocol = "Truth", Phase = 3, row.names = "Truth") %>%
 ps.truth.clr <- phyloseq(st.truth, sam.truth)
 ```
 
-## Get biases
+# Get biases
 
 ```{r}
 # First, we'll pick samples for estimation and cross validation.
@@ -145,7 +145,7 @@ bias_mat <- biases %>% select(-Taxon) %>% as("matrix")
 rownames(bias_mat) <- biases$Taxon
 ```
 
-## Basic tree
+# Basic tree
 
 ```{r}
 gt <- phy_tree(ps1) %>% ggtree
@@ -155,7 +155,7 @@ gt + geom_tiplab(align = FALSE) +
     xlim_tree(6)
 ```
 
-## Tree with bias
+# Tree with bias
 
 
 Here's the line plot, which I want to plot along with the tree:
