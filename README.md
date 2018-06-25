@@ -3,6 +3,30 @@
 Bioinformatic analyses of amplicon and shotgun datasets used for investigating
 MGS bias.
 
+## Pre-requisites
+
+### Dependencies
+
+#### R packages
+
+* `tidyverse`
+* `dotenv` <https://github.com/gaborcsardi/dotenv>
+* `rentrez` is needed only if re-generating the sample metadata files
+* `dada2`
+* `phyloseq`
+* `metaphlanr` if planning to post-process Metaphlan2 output to a read table
+
+#### Software
+
+* NCBI's SRA Toolkit for downloading sequence data
+* Metaphlan2 for microbiome profiling of shotgun data
+* (optional) Aspera's `ascp` program for faster downloading of sequence data
+
+### Environment file
+
+A file called `.env` must be set up with various directory paths, which can be
+parsed by the R package `dotenv`. An example is in `.env_example`.
+
 ## Datasets
 
 ### Amplicon
