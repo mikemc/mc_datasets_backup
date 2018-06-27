@@ -1,0 +1,242 @@
+---
+title: "Import Brooks2015 species table into phyloseq"
+output:
+  html_document:
+    toc: false
+    toc_float: false
+    self_contained: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_knit$set(progress=TRUE, verbose=TRUE)
+# Global chunk options
+knitr::opts_chunk$set(cache=FALSE, echo=TRUE, warning=FALSE,
+    message=FALSE, include=TRUE)
+# R options
+# options(width=100)
+options(stringsAsFactors = FALSE)
+```
+
+Here we will download the supplementary files and create a phyloseq object with
+the OTU table created by the authors.
+
+# Setup
+
+Load packages.
+```{r libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(phyloseq)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "brooks2015")
+```
+
+# Download supplemental files
+
+https://bmcmicrobiol.biomedcentral.com/articles/10.1186/s12866-015-0351-6
+
+"Additional file 2 Experimental design. Table of the prescribed mixing
+proportions, plate, and barcode for the experiments mixing equal proportions of
+cells, DNA, and PCR product."
+<!-- https://static-content.springer.com/esm/art%3A10.1186%2Fs12866-015-0351-6/MediaObjects/12866_2015_351_MOESM2_ESM.csv -->
+
+"Additional file 10 Table of above-threshold counts. Above-threshold counts for
+each sample in the experiments mixing equal amounts of cells, DNA, and PCR
+product."
+<!-- https://static-content.springer.com/esm/art%3A10.1186%2Fs12866-015-0351-6/MediaObjects/12866_2015_351_MOESM10_ESM.csv -->
+
+"Additional file 11 Table of below-threshold counts. Below-threshold counts for
+each sample in the experiments mixing equal amounts of cells, DNA, and PCR
+product."
+<!-- https://static-content.springer.com/esm/art%3A10.1186%2Fs12866-015-0351-6/MediaObjects/12866_2015_351_MOESM11_ESM.csv -->
+
+
+```{r}
+file_num <- c(2, 10, 11)
+urls <- paste0("https://static-content.springer.com/esm/",
+    "art%3A10.1186%2Fs12866-015-0351-6/MediaObjects/",
+    "12866_2015_351_MOESM", file_num, "_ESM.csv")
+fns <- file.path(data_path, "supplementary_files", 
+    paste0("AdditionalFile", file_num, ".csv"))
+dir.create(file.path(data_path, "supplementary_files"))
+walk2(urls, fns, download.file)
+```
+
+# Build the species/OTU table
+
+```{r}
+setwd(file.path(data_path, "supplementary_files"))
+```
+
+This code is copied from pdf rmarkdown output provided by the authors as
+[Additional file 7](https://static-content.springer.com/esm/art%3A10.1186%2Fs12866-015-0351-6/MediaObjects/12866_2015_351_MOESM7_ESM.pdf)
+
+```{r brooks}
+# Define column names.
+organismsDesign <- c("Gvaginalis", "Avaginae", "Lcrispatus", "Liners",
+    "Pbivia", "Samnii", "GroupBStrep")
+organismsResults <- c("Gardnerella.vaginalis", "Atopobium.vaginae",
+    "Lactobacillus.crispatus_cluster", "Lactobacillus.iners",
+    "Prevotella.bivia", "Sneathia.amnii", "Streptococcus.agalactiae")
+organismsForPlots <- c("G. vaginalis", "A. vaginae", "L. crispatus", 
+    "L. iners", "P. bivia", "S. amnii", "S. agalactiae")
+# Genome size and copy numbers obtained from NCBI.
+genomeSize <- c(1.65, 1.43, 2.04, 1.3, 2.47, 1.34, 2.2)
+copyNumbers <- c(2,1,4,1,1,1,7)
+# Read above-threshold counts data. Remove last (blank) column.
+countdata <- read.table("AdditionalFile10.csv", sep=",", header=TRUE,
+    row.names=1, colClasses=c("character", rep("numeric", 46)))
+countdata <- countdata[,-c(ncol(countdata))]
+atOrganisms <- colnames(countdata)
+# Summarize the number of counts per sample.
+atcounts <- apply(countdata,1,sum)
+summary(atcounts)
+# Calculate the total number above-threshold reads.
+sum(atcounts)
+# Read the below-threshold counts data.
+btdata <- read.table("AdditionalFile11.csv", sep=",", header=TRUE, row.names=1)
+btdata <- btdata[,-c(ncol(btdata))]
+btOrganisms <- sub("BT","", colnames(btdata))
+# Parse the sample IDs to get the plate and barcode numbers.
+m <- regexec("([1-6])_([0-9]+)" , rownames(countdata))
+matchlist <- regmatches(rownames(countdata), m)
+matchlistmatrix <- matrix(unlist(matchlist), ncol=3, byrow=TRUE)
+Plate <- as.numeric(matchlistmatrix[,2])
+Barcode <- as.numeric(matchlistmatrix[,3])
+# Join above-threshold counts with plate and barcode numbers.
+atdata <- data.frame(countdata, Plate, Barcode)
+atdata <- atdata[order(Plate,Barcode),]
+# Join below-threshold counts with plate and barcode numbers.
+btdata <- data.frame(btdata, Plate, Barcode)
+btdata <- btdata[order(Plate, Barcode),]
+# Read in the design from AdditionalFile2.csv and merge with the
+# above-threshold counts data.
+design <- read.table("AdditionalFile2.csv", sep=",", header=TRUE, row.names=1,
+    colClasses = c(rep("character",2), rep("numeric",9)) )
+alldata <- merge(design, atdata, by=c("Plate", "Barcode"), all=TRUE)
+alldata[,4:ncol(alldata)] <- sapply(alldata[,4:ncol(alldata)], as.numeric)
+# Label each sample according to the experiment. Experiment 1 mixed equal
+# numbers of cells, Experiment 2 mixed equal DNA, Experiment 3 mixed equal PCR
+# product.
+experiment <- numeric(nrow(alldata))
+experiment[(alldata$Plate == 1) | (alldata$Plate == 2)] <- 1
+experiment[(alldata$Plate == 3) | (alldata$Plate == 4)] <- 2
+experiment[(alldata$Plate == 5) | (alldata$Plate == 6)] <- 3
+experiment <- factor(experiment)
+# Get the number of above-threshold reads classified as belonging to taxa that
+# were not in the study.
+otherData <- alldata[,-match(c("Plate","Barcode","Experiment", organismsDesign,
+        organismsResults), names(alldata))]
+otherCounts <- apply(as.matrix(otherData),1,sum)
+sum(otherCounts)
+# Get the number of below-threshold reads classified as belonging to taxa not
+# in the study.
+allbtdata <- merge(btdata, atdata, by=c("Plate", "Barcode"), all=TRUE)
+allbtdata <- sapply(allbtdata, as.numeric)
+btexp1 <- allbtdata[(allbtdata[,"Plate"] == 1) | (allbtdata[,"Plate"] == 2),]
+btexp2 <- allbtdata[(allbtdata[,"Plate"] == 3) | (allbtdata[,"Plate"] == 4),]
+btexp3 <- allbtdata[(allbtdata[,"Plate"] == 5) | (allbtdata[,"Plate"] == 6),]
+totalcounts1 <- apply(btexp1,1,sum)
+totalcounts2 <- apply(btexp2,1,sum)
+totalcounts3 <- apply(btexp3,1,sum)
+btCounts1 <- btexp1[,-match(names(atdata), colnames(btexp1))]
+btCounts2 <- btexp2[,-match(names(atdata), colnames(btexp2))]
+btCounts3 <- btexp3[,-match(names(atdata), colnames(btexp3))]
+btResultsOrganisms <- paste(organismsResults, "BT", sep="")
+btNotResultsCounts1 <- sum(btCounts1[,-match(btResultsOrganisms,
+        colnames(btCounts1))])
+btNotResultsCounts2 <- sum(btCounts2[,-match(btResultsOrganisms,
+        colnames(btCounts2))])
+btNotResultsCounts3 <- sum(btCounts3[,-match(btResultsOrganisms,
+        colnames(btCounts3))])
+btNotResultsCounts1 + btNotResultsCounts2 + btNotResultsCounts3
+# Get total number of reads (above- and below-threshold).
+sum(totalcounts1)+sum(totalcounts2)+sum(totalcounts3)
+# Normalize the above-threshold data to proportions.
+dataNorm <- data.frame(alldata[,c(organismsDesign, organismsResults)],
+    otherCounts)
+Normcounts <- apply(dataNorm[,c(organismsResults, "otherCounts")],1,sum)
+classcounts <- Normcounts
+dataNorm[,c(organismsResults, "otherCounts")] <- dataNorm[,c(organismsResults,
+    "otherCounts")]/Normcounts
+# Adjust counts data for copy number and genome size.
+dataNorm[experiment == 1,organismsResults] <- t(t(dataNorm[experiment ==
+        1,organismsResults])/copyNumbers)
+dataNorm[experiment == 2,organismsResults] <- t(t(dataNorm[experiment ==
+        2,organismsResults])*(genomeSize/copyNumbers))
+# Re-normalize to proportions.
+Normcounts <- apply(dataNorm[,c(organismsResults, "otherCounts")],1,sum)
+dataNorm[,c(organismsResults, "otherCounts")] <- dataNorm[,c(organismsResults,
+    "otherCounts")]/Normcounts
+# Summarize the proportion of above-threshold reads classified as belonging to
+# taxa not in the study for each sample.
+summary(dataNorm$otherCounts)
+# Make a data frame for each experiment.
+classcounts1 <- classcounts[experiment == 1]
+classcounts2 <- classcounts[experiment == 2]
+classcounts3 <- classcounts[experiment == 3]
+exp1Norm <- dataNorm[experiment == 1,]
+exp2Norm <- dataNorm[experiment == 2,]
+exp3Norm <- dataNorm[experiment == 3,]
+# Re-order the rows according to the design.
+classcounts1 <- classcounts1[with(exp1Norm, order(Gvaginalis, Avaginae,
+        Lcrispatus, Liners, Pbivia, Samnii, GroupBStrep))]
+classcounts2 <- classcounts2[with(exp2Norm, order(Gvaginalis, Avaginae,
+        Lcrispatus, Liners, Pbivia, Samnii, GroupBStrep))]
+classcounts3 <- classcounts3[with(exp3Norm, order(Gvaginalis, Avaginae,
+        Lcrispatus, Liners, Pbivia, Samnii, GroupBStrep))]
+exp1Norm <- exp1Norm[with(exp1Norm, order(Gvaginalis, Avaginae, Lcrispatus,
+        Liners, Pbivia, Samnii, GroupBStrep)),]
+exp2Norm <- exp2Norm[with(exp2Norm, order(Gvaginalis, Avaginae, Lcrispatus,
+        Liners, Pbivia, Samnii, GroupBStrep)),]
+exp3Norm <- exp3Norm[with(exp3Norm, order(Gvaginalis, Avaginae, Lcrispatus,
+        Liners, Pbivia, Samnii, GroupBStrep)),]
+```
+
+# Create a phyloseq object
+
+Now we want to create a `phyloseq` to use for our analysis. We want an otu
+table unadjusted by 16S copy number or genome size, since we want to include
+all sources of bias and be able to control such adjustments later.
+```{r}
+# Delete variables to conflicting with the tibble column names
+remove(Plate, Barcode)
+tb <- alldata %>% as_tibble %>%
+    mutate(Plate = as.integer(Plate), Barcode = as.integer(Barcode)) %>%
+    arrange(Plate, Barcode)
+tb <- tb %>%
+    add_column(Sample = paste0('s', tb$Plate, '-', tb$Barcode), 
+        .before = 1)
+# Check that the plates match the experiments as expected
+tb %>% select(Plate, Experiment) %>% table
+# Sample metadata
+sam <- tb %>%
+    select(Sample, Plate, Barcode, Experiment, organismsDesign)
+num_species <- sam[, organismsDesign] %>% apply(1, function (x) sum(x>0))
+sam <- sam %>%
+    add_column(Num_species = num_species, .after = "Experiment")
+# Sequence table
+st <- tb %>%
+    select(Sample, organismsResults)
+# Use consistent taxa names
+taxa <- c("G.vaginalis", "A.vaginae", "L.crispatus", "L.iners", "P.bivia",
+    "S.amnii", "S.agalactiae")
+names(sam) <- names(sam) %>% {c(.[1:5], taxa)}
+names(st) <- names(st) %>% {c(.[1], taxa)}
+# Build a phyloseq object
+sam <- sam %>%
+    select(-Sample) %>%
+    data.frame(row.names = sam$Sample) %>%
+    sample_data
+st <- st %>%
+    select(-Sample) %>%
+    data.frame(row.names = st$Sample) %>%
+    otu_table(taxa_are_rows = FALSE)
+ps <- phyloseq(sam, st)
+saveRDS(ps, file.path(data_path, "brooks_phyloseq.Rds"))
+```
