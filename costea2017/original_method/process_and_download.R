@@ -1,18 +1,22 @@
-library(stringr)
+# Process (munge) the metadata and download the sequence data for the
+# Costea2017 Phase 3 experiment. This script was originally used to download
+# the sequence data on the BRC cluster, but is no longer preferred.
+
 library(tidyverse)
 library(magrittr)
 
-if (Sys.info()["user"] == "michael") {
-    home_path <- "/home/michael"
-} else if (Sys.info()["user"] == "mrmclare") {
-    home_path <- "/home/mrmclare"
-} else {
-    print("User not recognized")
-}
-data_path <- file.path(home_path, "data/costea2017")
-git_path <- file.path(home_path, "active_research/metagenomics_calibration")
-metadata_path <- file.path(git_path, "costea2017", "metadata")
-aspera_path <- file.path(home_path, "applications/aspera/connect")
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "costea2015")
+metadata_path <- file.path(script_path, "original_method")
+aspera_path <- Sys.getenv("ASCP_PATH") %>%
+    str_split(pattern = "\\|") %>%
+    {.[[1]][1]}
+
+# Study in the ENA at https://www.ebi.ac.uk/ena/data/view/PRJEB14847
+# Accession info downloaded by choosing columns (with "Select columns" link)
+# and downloading a tsv file ("Text" link) and saved as "PRJEB14847.tsv".
 
 ## Sample metadata
 # The file sample_description.xlsx is a version of Supplementary Data 3
@@ -50,18 +54,18 @@ ph3 <- ph3 %>%
     left_join(sam_df, by="Sample")
 
 ## Download with ascp (aspera connect command line tool)
-asphera_urls <- ph3$fastq_aspera %>% str_split(";", simplify=TRUE) %>% c
+aspera_urls <- ph3$fastq_aspera %>% str_split(";", simplify=TRUE) %>% c
 commands <- paste(file.path(aspera_path, "bin/ascp"),
     "-QT -l 300m -P33001 -i", 
     file.path(aspera_path, "etc/asperaweb_id_dsa.openssh"),
-    paste0("era-fasp@", asphera_urls),
+    paste0("era-fasp@", aspera_urls),
     file.path(data_path, "reads")
     )
 walk(commands, system)
 # system(commands[5])
 
 ## Check dowloaded files against md5sums
-downloads <- asphera_urls %>% 
+downloads <- aspera_urls %>% 
     str_extract("ERR[0-9]*_[1-2]\\.fastq\\.gz") %>%
     file.path(data_path, "reads", .)
 md5sums_expected <- ph3$fastq_md5 %>% str_split(";", simplify=TRUE) %>% c
