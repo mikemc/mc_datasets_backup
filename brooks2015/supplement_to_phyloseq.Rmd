@@ -63,7 +63,7 @@ urls <- paste0("https://static-content.springer.com/esm/",
     "12866_2015_351_MOESM", file_num, "_ESM.csv")
 fns <- file.path(data_path, "supplementary_files", 
     paste0("AdditionalFile", file_num, ".csv"))
-dir.create(file.path(data_path, "supplementary_files"))
+dir.create(file.path(data_path, "supplementary_files"), recursive = TRUE)
 walk2(urls, fns, download.file)
 ```
 
@@ -238,5 +238,5 @@ st <- st %>%
     data.frame(row.names = st$Sample) %>%
     otu_table(taxa_are_rows = FALSE)
 ps <- phyloseq(sam, st)
-saveRDS(ps, file.path(data_path, "brooks_phyloseq.Rds"))
+saveRDS(ps, file.path(data_path, "final", "brooks_phyloseq.Rds"))
 ```
