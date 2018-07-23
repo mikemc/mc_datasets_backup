@@ -1,0 +1,125 @@
+---
+title: "Import Parras-Molto2018 mock abundance table into phyloseq"
+output:
+  html_document:
+    toc: false
+    toc_float: false
+    self_contained: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE, cache=FALSE}
+knitr::opts_knit$set(progress=TRUE, verbose=TRUE)
+# Global chunk options
+knitr::opts_chunk$set(cache=FALSE, echo=TRUE, warning=FALSE,
+    message=FALSE, include=TRUE)
+# R options
+# options(width=100)
+options(stringsAsFactors = FALSE)
+```
+
+Goal is to create a `phyloseq` object with the viral abundance table that was
+used to create Figure 1.
+
+# Setup
+
+Load packages.
+```{r libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(phyloseq)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "parras-molto2018")
+```
+
+# Download supplemental files
+
+[Article](https://microbiomejournal.biomedcentral.com/articles/10.1186/s40168-018-0507-3)
+
+Additional file 1: Table S1. Overview of samples and procedures followed for
+the analysis of mock communities and saliva samples. (XLSX 11 kb)
+https://static-content.springer.com/esm/art%3A10.1186%2Fs40168-018-0507-3/MediaObjects/40168_2018_507_MOESM1_ESM.xlsx
+
+"Additional file 4: Table S4. Effect of several treatments in bacteria removal.
+(XLSX 9 kb)"
+https://static-content.springer.com/esm/art%3A10.1186%2Fs40168-018-0507-3/MediaObjects/40168_2018_507_MOESM4_ESM.xlsx
+
+"Additional file 5: Table S5. Virus enrichment and random DNA amplification
+effects on mock viral communities. Number of genomes determined by absolute
+qPCR. (XLSX 14 kb)"
+https://static-content.springer.com/esm/art%3A10.1186%2Fs40168-018-0507-3/MediaObjects/40168_2018_507_MOESM5_ESM.xlsx
+
+
+```{r}
+file_num <- c(1, 4, 5)
+urls <- paste0("https://static-content.springer.com/esm/",
+    "art%3A10.1186%2Fs40168-018-0507-3/MediaObjects/",
+    "40168_2018_507_MOESM", file_num, "_ESM.xlsx")
+fns <- file.path(data_path, "supplementary_files", 
+    paste0("additional_file_", file_num, ".xlsx"))
+names(fns) <- file_num
+dir.create(file.path(data_path, "supplementary_files"), recursive = TRUE)
+walk2(urls, fns, download.file)
+```
+
+# Create phyloseq for viruses
+
+First, we need to import the abundance data from the Excel file. The table for
+the first mock community is in range "A2:H21", including a header row with the
+taxa names. The second row is not data, but only has the label "Mock community
+1" and so can be removed by filtering to rows with non-NA abundances. The table
+for the second mock (without header) and the row labeled "Mock community 2" is
+in range "A23:H47".
+```{r}
+mock1 <- readxl::read_xlsx(fns["5"], range = "A2:H21") %>%
+    rename(Sample = X__1) %>%
+    filter(!is.na(Lambda))
+mock2 <- readxl::read_xlsx(fns["5"], range = "A23:H47", 
+    col_names = colnames(mock1))
+```
+To give each sample unique names in the combined table, I will prepend "M1" and
+"M2" to the sample names.
+```{r}
+mock_tb <- list("1" = mock1, "2" = mock2) %>%
+    bind_rows(.id = "Mock") %>%
+    mutate(Sample = paste0("M", Mock, "_", Sample))
+```
+
+Next, we want to parse sample metadata from the sample names and mock community
+number into a `sample_data` dataframe.
+The sample name has the format "Treatment_#" where "#" is the replicate number.
+```{r}
+sam_tb <- mock_tb$Sample %>%
+    str_match("M([1-2])_(.+)_([1-9])") %>%
+    as_tibble() %>%
+    rename(Sample = V1, Mock = V2, Treatment = V3, Replicate = V4)
+```
+
+Next, we could optionally parse the treatment strings to get a column for each
+atomic treatment.
+```{r}
+```
+
+Then we make a phyloseq object:
+```{r}
+taxa <- colnames(mock1)[-1]
+print(taxa)
+abun <- mock_tb %>%
+    select(taxa) %>%
+    data.frame(row.names = mock_tb$Sample) %>%
+    otu_table(taxa_are_rows = FALSE)
+head(abun)
+sam <- sam_tb %>%
+    select(-Sample) %>%
+    data.frame(row.names = sam_tb$Sample) %>%
+    sample_data
+head(sam)
+ps <- phyloseq(abun, sam)
+dir.create(file.path(data_path, "final"))
+saveRDS(ps, file.path(data_path, "final", "phyloseq.Rds"))
+```
+
