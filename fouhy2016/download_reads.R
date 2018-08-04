@@ -16,8 +16,8 @@ command <- paste("prefetch",
     "--ascp-path", Sys.getenv("ASCP_PATH") %>% shQuote,
     glue::collapse(tb$SRA_run, sep=" "))
 system(command)
-# Convert to fastq
-command <- paste("fastq-dump --gzip",
+# Convert to fastq.
+command <- paste("fastq-dump --split-3 --gzip",
         "--outdir", file.path(data_path, "reads"),
         glue::collapse(tb$SRA_run, sep=" ")
         )
@@ -30,3 +30,28 @@ system(command)
 # TODO: Delete the .sra files after fastq conversion (?)
 # Also, see https://github.com/ncbi/sra-tools/issues/71 to consider alternate
 # method
+
+#################
+
+command <- paste("prefetch", 
+    "--ascp-path", Sys.getenv("ASCP_PATH") %>% shQuote,
+    glue::collapse(tb$SRA_run[c(1:2, 8:9)], sep=" "))
+system(command)
+# Convert to fastq
+command <- paste("fastq-dump --split-3 --gzip",
+        "--outdir", file.path(data_path, "reads"),
+        glue::collapse(tb$SRA_run[c(1:2, 8:9)], sep=" ")
+        )
+system(command)
+
+runs <- split(tb$SRA_run, tb$Sequencer)
+runs$MiSeq[1:2]
+runs$PGM[1:2]
+
+command <- paste("fastq-dump --split-spot --split-3 --gzip",
+        "--outdir", file.path(data_path, "reads"),
+        glue::collapse(runs$MiSeq[1:2], sep=" ")
+        )
+system(command)
+
+# Note the use of --split-3 to split the MiSeq reads

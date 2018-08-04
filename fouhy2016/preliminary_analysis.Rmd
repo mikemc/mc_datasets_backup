@@ -1,0 +1,246 @@
+---
+title: "Preliminary DADA2 analysis of the Fouhy2016 dataset"
+---
+
+# Notes
+
+[Note about using dada2 with Ion Torrent data](https://benjjneb.github.io/dada2/faq.html#can-i-use-dada2-with-my-454-or-ion-torrent-data)
+
+PGM reads are single end; MiSeq reads are paired end. Not sure where the
+matching read files are.
+
+# Starting point
+
+Reads are stored in `DATA_PATH/fouhy2016/reads`.
+, and in
+compressed fastq files named by the SRA run accession. The data is (single-end)
+454 data.
+
+Next, I need to check that all non-biological nucleotides have been removed,
+e.g. primers.
+
+I need to pick filter and trim parameters.
+
+The lengths of the reads are highly variable and so I'll need to look at the
+length distribution and decide what length to filter below (`maxLen`).
+
+# Getting ready
+
+Load packages.
+```{r libraries, message=FALSE, warning=FALSE}
+library(Biostrings)
+library(dada2); packageVersion("dada2")
+library(tidyverse)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "fouhy2016")
+tax_path <- Sys.getenv("TAX_DB")
+species_path <- Sys.getenv("SPECIES_DB")
+reads_path <- file.path(data_path, "reads")
+list.files(reads_path) %>% length
+list.files(reads_path) %>% head
+```
+
+Load the sample metadata.
+```{r}
+sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
+```
+
+```{r filenames}
+fns <- sort(list.files(reads_path, pattern=".fastq.gz", full.names = TRUE)) %>%
+    head(n=10) # Just use the first 10 files for testing purposes
+# Extract SRA runs from file names (which have the format SRR1661069.fastq.gz)
+# to use as sample names
+sample_names <- strsplit(basename(fns), "\\.") %>%
+    map_chr(1)
+```
+
+# Choosing filter and trim parameters
+
+Goal is to make sure primer sequences are removed if present, to choose
+`maxLen` to filter below, and the truncation length.
+
+TODO: Examine files from the three different experiments to make sure there
+aren't significant differences.
+
+## Are there primer sequences?
+
+
+```{r}
+dna <- readDNAStringSet(fns[1:2], format = "fastq")
+
+dna
+
+# Note that the barcodes may vary in length.
+fwd_p1 <- collapse("CCATCTCATCCCTGCGTGTCTCCGACTCAG", "NNNNNN", "AGAGTTYGATYMTGGCTYAG")
+fwd_p2 <- collapse("CCATCTCATCCCTGCGTGTCTCCGACTCAG", "NNNNNN", "AGARTTTGATCYTGGTTCAG")
+rev_1b <- "CCTATCCCCTGTGTGCCTTGGCAGTCTCAGATTACCGCGGCTGCTGG"
+```
+
+
+## Read length distribution
+
+
+```{r}
+dna <- readDNAStringSet(fns[1:2], format = "fastq")
+qplot(dna@ranges@width, log="y")
+dna@ranges@width %>%
+    summary
+# dna@ranges@width %>%
+#     {.[. > 500 & .<600]} %>%
+#     table
+```
+
+The primers are targeting a region of length approximately ???.
+
+
+## Inspect read quality profiles
+
+We start by visualizing the quality profiles of the forward reads:
+```{r see_quality}
+qps <- plotQualityProfile(fns[1:4])
+qps +
+    geom_vline(xintercept = 300, color = "darkblue") +
+    geom_vline(xintercept = 340, color = "darkblue")
+```
+
+From DADA2 tutorial:
+In gray-scale is a heat map of the frequency of each quality score at each base
+position. The median quality score at each position is shown by the green line,
+and the quartiles of the quality score distribution by the orange lines. The
+red line shows the scaled proportion of reads that extend to at least that
+position (this is more useful for other sequencing technologies, as Illumina
+reads are typically all the same length, hence the flat red line).
+
+# Filter and trim
+
+Assign the filenames for the filtered fastq.gz files.
+```{r filter, message=FALSE, warning=FALSE}
+# Place filtered files in filtered/ subdirectory
+filts <- file.path(reads_path, "filtered", paste0(sample_names, "_filt.fastq.gz"))
+out <- filterAndTrim(fns, filts, truncLen = 340, maxLen = 540,
+              maxN = 0, maxEE = 2, truncQ = 2, rm.phix = TRUE,
+              compress = TRUE, multithread = TRUE)
+head(out)
+```
+
+# Learn the Error Rates
+
+```{r learn_errors}
+err <- learnErrors(filts, multithread = TRUE)
+```
+
+Check the estimated error rates:
+```{r plot_errors, warning=FALSE}
+plotErrors(err, nominalQ = TRUE)
+```
+
+# Dereplication
+
+```{r dereplicate, message=FALSE}
+dereps <- derepFastq(filts, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(dereps) <- sample_names
+```
+
+# Sample Inference
+
+```{r dada}
+dada_obj <- dada(dereps, err = err, multithread = TRUE,
+    HOMOPOLYMER_GAP_PENALTY = -1, BAND_SIZE = 32) # Suggested for 454 data
+```
+Inspecting the returned `dada-class` object:
+```{r see_dada}
+dada_obj[[1]]
+```
+
+TODO: consider pooling options
+
+# Merge paired reads
+
+Skip this step because reads are single end.
+
+# Construct sequence table
+
+```{r seqtab}
+seqtab <- makeSequenceTable(dada_obj)
+dim(seqtab)
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+```
+All sequences have the same length, since we are using single-end reads and truncated.
+
+# Remove chimeras
+
+```{r chimeras, message=FALSE}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+ncol(seqtab.nochim)/ncol(seqtab)
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+TODO: consider how chimera removal differs between single and paired end reads.
+
+# Track reads through the pipeline
+
+Check number of reads that made it through each step in the pipeline:
+```{r track}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dada_obj, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoised", "nonchim")
+rownames(track) <- sample_names
+track
+```
+
+# Assign taxonomy
+
+```{r taxify}
+taxa <- assignTaxonomy(seqtab.nochim, tax_path, multithread = TRUE)
+```
+
+```{r species}
+taxa <- addSpecies(taxa, species_path)
+```
+
+Inspect the taxonomic assignments:
+```{r see_tax}
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+# Fraction with species identified:
+taxa[, "Species"] %>%
+    {mean(!is.na(.))}
+```
+
+Currently, can't identify species. Could be b/c of primer removal issue, or
+because `addSpecies` is too conservative.
+
+# (?) Phylogeny
+
+# Build a phyloseq object
+
+```{r build_phyloseq}
+library(phyloseq)
+# load the metadata
+sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
+sam_df <- as.data.frame(sam)
+rownames(sam_df) <- sam$SRA_run
+# Combine the sequence table with metadata and taxonomy
+ps <- phyloseq(
+    otu_table(seqtab.nochim, taxa_are_rows = FALSE),
+    sample_data(sam_df), 
+    tax_table(taxa))
+# Add the sequences
+sequences <- Biostrings::DNAStringSet(taxa_names(ps))
+names(sequences) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, sequences)
+# Rename samples from the SRA run to the names given by the authors
+sample_names(ps) <- sample_data(ps)$Sample
+# Save in data_path
+saveRDS(ps, file.path(data_path, paste0(Sys.Date(), "_phyloseq.Rds")))
+```
