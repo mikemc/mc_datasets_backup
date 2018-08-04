@@ -16,12 +16,12 @@ sra_id <- entrez_link(dbfrom = "bioproject", id = "267701", db="sra") %>%
     {.$links$bioproject_sra}
 xml <- entrez_fetch(db = "sra", id = sra_id, rettype = "xml") %>%
     read_xml
-# To view, run `write_lines(xml, "/tmp/xml.txt")` and open in a text editor.
-# Doing so, we can see that the sample names given by the authors are stored in
-# an element named "LIBRARY_NAME" (the only element with such a name), the SRA
-# run (needed for downloading the reads) is stored in an element matching
-# ".//RUN/IDENTIFIERS/PRIMARY_ID", and the rest of the info we need for that
-# sample is contained in an element matching ".//DESIGN_DESCRIPTION".
+# To view, run `write_lines(xml, "/tmp/ncbi_records.xml")` and open in a text
+# editor.  Doing so, we can see that the sample names given by the authors are
+# stored in an element named "LIBRARY_NAME" (the only element with such a
+# name), the SRA run (needed for downloading the reads) is stored in an element
+# matching ".//RUN/IDENTIFIERS/PRIMARY_ID", and the rest of the info we need
+# for that sample is contained in an element matching ".//DESIGN_DESCRIPTION".
 tb <- tibble(
     Sample = xml %>%
         xml_find_all(".//LIBRARY_NAME") %>%
