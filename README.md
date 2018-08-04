@@ -73,6 +73,12 @@ A, Saulnier D, Scott KP, Singh B, Slezak K, Veiga P, Versalovic J, Zhao L,
 Zoetendal EG, Ehrlich SD, Dore J, Bork P. 2017. Towards standards for human
 fecal sample processing in metagenomic studies. Nat Biotechnol 35:1069–1076.
 
+#### fouhy2016 (16S amplicon)
+
+Fouhy F, Clooney AG, Stanton C, Claesson MJ, Cotter PD. 2016. 16S rRNA gene
+sequencing of mock microbial populations- impact of DNA extraction method,
+primer choice and sequencing platform. BMC Microbiol 16:123.
+
 #### sinha2015 (16S amplicon)
 
 Sinha R, Abu-Ali G, Vogtmann E, Fodor AA, Ren B, Amir A, Schwager E, Crabtree
