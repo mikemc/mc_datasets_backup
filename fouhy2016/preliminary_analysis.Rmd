@@ -6,15 +6,13 @@ title: "Preliminary DADA2 analysis of the Fouhy2016 dataset"
 
 [Note about using dada2 with Ion Torrent data](https://benjjneb.github.io/dada2/faq.html#can-i-use-dada2-with-my-454-or-ion-torrent-data)
 
-PGM reads are single end; MiSeq reads are paired end. Not sure where the
-matching read files are.
+PGM reads are single end; MiSeq reads are paired end. Since I don't know how to
+split the MiSeq reads, let's just work with the PGM reads.
 
 # Starting point
 
-Reads are stored in `DATA_PATH/fouhy2016/reads`.
-, and in
-compressed fastq files named by the SRA run accession. The data is (single-end)
-454 data.
+Reads are stored in `DATA_PATH/fouhy2016/reads` in compressed fastq files named
+by the SRA run accession. 
 
 Next, I need to check that all non-biological nucleotides have been removed,
 e.g. primers.
@@ -27,9 +25,11 @@ length distribution and decide what length to filter below (`maxLen`).
 # Getting ready
 
 Load packages.
-```{r libraries, message=FALSE, warning=FALSE}
-library(Biostrings)
+```{r libraries}
 library(dada2); packageVersion("dada2")
+library(ShortRead); packageVersion("ShortRead")
+library(Biostrings); packageVersion("Biostrings")
+
 library(tidyverse)
 ```
 Set paths.
@@ -44,85 +44,150 @@ reads_path <- file.path(data_path, "reads")
 list.files(reads_path) %>% length
 list.files(reads_path) %>% head
 ```
-
 Load the sample metadata.
 ```{r}
 sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
 ```
-
-```{r filenames}
-fns <- sort(list.files(reads_path, pattern=".fastq.gz", full.names = TRUE)) %>%
-    head(n=10) # Just use the first 10 files for testing purposes
-# Extract SRA runs from file names (which have the format SRR1661069.fastq.gz)
-# to use as sample names
-sample_names <- strsplit(basename(fns), "\\.") %>%
-    map_chr(1)
+We'll just be working with the PGM samples with the V45 primer set for now.
+```{r}
+sam0 <- sam %>%
+    filter(Sequencer == "PGM", Primer == "V45")
+sam0
 ```
+Get the sequence files.
+```{r filenames}
+fns <- file.path(reads_path, paste0(sam0$SRA_run, ".fastq.gz"))
+names(fns) <- sam0$SRA_run
+all(fns %in% list.files(reads_path, pattern=".fastq.gz", full.names = TRUE))
+```
+
+Note, we will probably want to separately choose trim parameters for the
+different primer sets (or at least the different primer regions). Not sure
+about learning the errors.
+
+From the Methods: "PGM: V1-V2 primers (335-355 bp), and V4-V5 primer (380-400
+bp)".
+
+
+```{r load_primers}
+primers <- readr::read_csv(file.path(script_path, "primers.csv"))
+print(primers)
+primers.v45 <- primers %>%
+    filter(Primer_set == "V45") %>%
+    select(Direction, Spacer, Primer_sequence) %>%
+    unique
+print(primers.v45)
+primer_pair <- primers.v45 %>%
+    mutate(Sequence = paste0(Spacer, Primer_sequence)) %>%
+    {split(.$Sequence, .$Direction)}
+FWD <- primer_pair$Forward
+REV <- primer_pair$Reverse
+```
+
+
+# Check for primers.
+
+```{r}
+allOrients <- function(primer) {
+    # Create all orientations of the input sequence
+    require(Biostrings)
+    dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+    orients <- c(Forward = dna, Complement = complement(dna), Reverse = reverse(dna), 
+        RevComp = reverseComplement(dna))
+    return(sapply(orients, toString))  # Convert back to character vector
+}
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+FWD.orients
+```
+
+TODO: only run if files not yet existing.
+```{r, eval = F}
+# Put N-filterd files in filtN/ subdirectory
+fns.filtN <- file.path(reads_path, "filtN", basename(fns))
+
+out <- filterAndTrim(fns, fns.filtN, maxN = 0, multithread = TRUE)
+
+primerHits <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nhits > 0))
+}
+rbind(FWD = sapply(FWD.orients, primerHits, fn = fns.filtN[[1]]), 
+    REV = sapply(REV.orients, primerHits, fn = fns.filtN[[1]]))
+```
+
+Remove primers with cutadapt.
+```{r}
+system2("cutadapt", args = "--version")
+
+path.cut <- file.path(reads_path, "cutadapt")
+if(!dir.exists(path.cut)) dir.create(path.cut)
+fns.cut <- file.path(path.cut, basename(fns))
+names(fns.cut) <- names(fns)
+
+FWD.RC <- dada2:::rc(FWD)
+REV.RC <- dada2:::rc(REV)
+# Trim FWD and the reverse-complement of REV off of reads
+# flags <- paste("-g", paste0("^", FWD), "-a", REV.RC) 
+flags <- paste("-a", paste0(FWD, "...", REV.RC))
+# Run Cutadapt
+report_fn <- file.path(path.cut, "cutadapt_report.txt")
+for (i in seq_along(fns)) {
+    command <- paste("cutadapt", flags, "-o", fns.cut[i], fns.filtN[i],
+        "--minimum-length 1", 
+        "| tee -a", report_fn)
+    system(command)
+}
+
+# Check that primers are (mostly) gone
+rbind(FWD = sapply(FWD.orients, primerHits, fn = fns.cut[[1]]), 
+    REV = sapply(REV.orients, primerHits, fn = fns.cut[[1]]))
+```
+
 
 # Choosing filter and trim parameters
 
-Goal is to make sure primer sequences are removed if present, to choose
-`maxLen` to filter below, and the truncation length.
-
-TODO: Examine files from the three different experiments to make sure there
-aren't significant differences.
-
-## Are there primer sequences?
-
-
-```{r}
-dna <- readDNAStringSet(fns[1:2], format = "fastq")
-
-dna
-
-# Note that the barcodes may vary in length.
-fwd_p1 <- collapse("CCATCTCATCCCTGCGTGTCTCCGACTCAG", "NNNNNN", "AGAGTTYGATYMTGGCTYAG")
-fwd_p2 <- collapse("CCATCTCATCCCTGCGTGTCTCCGACTCAG", "NNNNNN", "AGARTTTGATCYTGGTTCAG")
-rev_1b <- "CCTATCCCCTGTGTGCCTTGGCAGTCTCAGATTACCGCGGCTGCTGG"
-```
-
-
 ## Read length distribution
 
-
 ```{r}
-dna <- readDNAStringSet(fns[1:2], format = "fastq")
+dna <- readDNAStringSet(fns.cut[1], format = "fastq")
 qplot(dna@ranges@width, log="y")
 dna@ranges@width %>%
     summary
-# dna@ranges@width %>%
-#     {.[. > 500 & .<600]} %>%
-#     table
 ```
 
-The primers are targeting a region of length approximately ???.
-
+TODO: figure out how to verify the target length after primers removed.
 
 ## Inspect read quality profiles
 
 We start by visualizing the quality profiles of the forward reads:
 ```{r see_quality}
-qps <- plotQualityProfile(fns[1:4])
-qps +
-    geom_vline(xintercept = 300, color = "darkblue") +
-    geom_vline(xintercept = 340, color = "darkblue")
+qps <- plotQualityProfile(fns)
+qps + 
+    geom_vline(xintercept = 300) +
+    geom_vline(xintercept = 365)
 ```
 
-From DADA2 tutorial:
-In gray-scale is a heat map of the frequency of each quality score at each base
-position. The median quality score at each position is shown by the green line,
-and the quartiles of the quality score distribution by the orange lines. The
-red line shows the scaled proportion of reads that extend to at least that
-position (this is more useful for other sequencing technologies, as Illumina
-reads are typically all the same length, hence the flat red line).
+From the DADA2 tutorial:
+
+> In gray-scale is a heat map of the frequency of each quality score at each base
+> position. The median quality score at each position is shown by the green line,
+> and the quartiles of the quality score distribution by the orange lines. The
+> red line shows the scaled proportion of reads that extend to at least that
+> position (this is more useful for other sequencing technologies, as Illumina
+> reads are typically all the same length, hence the flat red line).
 
 # Filter and trim
 
-Assign the filenames for the filtered fastq.gz files.
+Since our goal is just to be able to distinguish the mock strains, we can
+truncate a bit to keep more reads. I may want to revisit this after seeing if
+we can assign our SVs to the mock strains.
 ```{r filter, message=FALSE, warning=FALSE}
 # Place filtered files in filtered/ subdirectory
-filts <- file.path(reads_path, "filtered", paste0(sample_names, "_filt.fastq.gz"))
-out <- filterAndTrim(fns, filts, truncLen = 340, maxLen = 540,
+filts <- file.path(reads_path, "filtered", 
+    paste0(names(fns), "_filt.fastq.gz"))
+out <- filterAndTrim(fns, filts, truncLen = 300,
               maxN = 0, maxEE = 2, truncQ = 2, rm.phix = TRUE,
               compress = TRUE, multithread = TRUE)
 head(out)
@@ -139,30 +204,29 @@ Check the estimated error rates:
 plotErrors(err, nominalQ = TRUE)
 ```
 
+Poor fit at high Q may be because there are few bases with such high Q.
+
 # Dereplication
 
 ```{r dereplicate, message=FALSE}
 dereps <- derepFastq(filts, verbose=TRUE)
 # Name the derep-class objects by the sample names
-names(dereps) <- sample_names
+names(dereps) <- names(fns)
 ```
 
 # Sample Inference
 
 ```{r dada}
-dada_obj <- dada(dereps, err = err, multithread = TRUE,
-    HOMOPOLYMER_GAP_PENALTY = -1, BAND_SIZE = 32) # Suggested for 454 data
+dada_obj <- dada(dereps, err = err, multithread = TRUE)
 ```
 Inspecting the returned `dada-class` object:
 ```{r see_dada}
 dada_obj[[1]]
 ```
 
-TODO: consider pooling options
-
 # Merge paired reads
 
-Skip this step because reads are single end.
+Only needed for the MiSeq reads.
 
 # Construct sequence table
 
@@ -172,12 +236,14 @@ dim(seqtab)
 # Inspect distribution of sequence lengths
 table(nchar(getSequences(seqtab)))
 ```
-All sequences have the same length, since we are using single-end reads and truncated.
+All sequences have the same length, since we are using truncated single-end
+reads.
 
 # Remove chimeras
 
 ```{r chimeras, message=FALSE}
-seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus",
+    multithread=TRUE, verbose=TRUE)
 dim(seqtab.nochim)
 ncol(seqtab.nochim)/ncol(seqtab)
 sum(seqtab.nochim)/sum(seqtab)
@@ -193,54 +259,80 @@ getN <- function(x) sum(getUniques(x))
 track <- cbind(out, sapply(dada_obj, getN), rowSums(seqtab.nochim))
 # If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
 colnames(track) <- c("input", "filtered", "denoised", "nonchim")
-rownames(track) <- sample_names
+rownames(track) <- names(fns)
 track
 ```
 
 # Assign taxonomy
 
+TODO: print the tax db file names to show the silva versions.
+
 ```{r taxify}
-taxa <- assignTaxonomy(seqtab.nochim, tax_path, multithread = TRUE)
+tax <- assignTaxonomy(seqtab.nochim, tax_path, multithread=TRUE)
 ```
 
 ```{r species}
-taxa <- addSpecies(taxa, species_path)
+tax <- addSpecies(tax, species_path)
 ```
 
 Inspect the taxonomic assignments:
 ```{r see_tax}
-taxa.print <- taxa # Removing sequence rownames for display only
-rownames(taxa.print) <- NULL
-head(taxa.print)
-# Fraction with species identified:
-taxa[, "Species"] %>%
-    {mean(!is.na(.))}
+tax %>%
+    as_tibble %>%
+    select(Genus:Species) %>%
+    print(n=30)
 ```
 
-Currently, can't identify species. Could be b/c of primer removal issue, or
-because `addSpecies` is too conservative.
 
-# (?) Phylogeny
+```{r}
+s <- tax %>%
+    as_tibble(rownames = "Sequence") %>%
+    filter(Genus == "Pseudomonas") %>%
+    {.$Sequence}
 
-# Build a phyloseq object
+s
+# [1] "TACGAAGGGTGCAAGCGTTAATCGGAATTACTGGGCGTAAAGCGCGCGTAGGTGGTTCAGCAAGTTGGATGTGAAATCCCCGGGCTCAACCTGGGAACTGCATCCAAAACTACTGAGCTAGAGTACGGTAGAGGGTGGTGGAATTTCCTGTGTAGCGGTGAAATGCGTAGATATAGGAAGGAACACCAGTGGCGAAGGCGACCACCTGGACTGATACTGACACTGAGGTGCGAAAGCGTGGGGAGCAAACAGGATTAGATACCCTGGTAGTCCACGCCGTAAACGATGTCGACTAGCCGTTGGGATCCT"
+```
 
-```{r build_phyloseq}
-library(phyloseq)
-# load the metadata
-sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
-sam_df <- as.data.frame(sam)
-rownames(sam_df) <- sam$SRA_run
-# Combine the sequence table with metadata and taxonomy
-ps <- phyloseq(
-    otu_table(seqtab.nochim, taxa_are_rows = FALSE),
-    sample_data(sam_df), 
-    tax_table(taxa))
-# Add the sequences
-sequences <- Biostrings::DNAStringSet(taxa_names(ps))
-names(sequences) <- taxa_names(ps)
-ps <- merge_phyloseq(ps, sequences)
-# Rename samples from the SRA run to the names given by the authors
-sample_names(ps) <- sample_data(ps)$Sample
-# Save in data_path
-saveRDS(ps, file.path(data_path, paste0(Sys.Date(), "_phyloseq.Rds")))
+Ask Ben what the best way to get accurate calls on the mock is.
+
+
+Then try improving by using cutadapt and playing with trunc param.
+
+Then generalize to a pipeline for all primer sets.
+
+Save all these objects.
+```{r}
+list(err, track, seqtab, seqtab.nochim, tax) %>%
+    walk(~saveRDS(., file.path(data_path, "dada_out",
+                deparse(substitute(.)))) )
+
+list.files(file.path(data_path, "dada_out"))
+
+list(err, track, seqtab, seqtab.nochim, tax) %>%
+    map(function (x) print(file.path(data_path, "dada_out",
+                deparse(substitute(x)))) )
+
+
+li <- list(err, track, seqtab, seqtab.nochim, tax) %>%
+    map_chr(my_save)
+for (i in seq_along(li)) {
+    print(file.path(data_path, "dada_out", deparse(substitute(li[[i]]))))
+    # walk(~saveRDS(., file.path(data_path, "dada_out",
+    #             deparse(substitute(.)))) )
+}
+
+#### This works, I wish the other tries would
+my_save <- function(obj) {
+    bn <- deparse(substitute(obj))
+    fn <- file.path(data_path, "dada_out", paste0(bn, ".Rds"))
+    saveRDS(obj, fn)
+}
+my_save(err)
+my_save(track)
+my_save(seqtab)
+my_save(seqtab.nochim)
+my_save(tax)
+
+list.files(file.path(data_path, "dada_out"))
 ```
