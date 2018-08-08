@@ -1,0 +1,26 @@
+Organism,Species,Accession,Database,Notes
+"Enterococcus faecalis, strain OG1RF",Enterococcus faecalis,NC_017316,nucleotide,
+"Actinomyces odontolyticus, strain 1A.21",Actinomyces odontolyticus,NZ_DS264586,nucleotide,NA
+"Actinomyces odontolyticus, strain 1A.21",Actinomyces odontolyticus,NZ_DS264585,nucleotide,NA
+"Bacillus cereus, strain NRS 248",Bacillus cereus,NC_003909,nucleotide,NA
+"Bacteroides vulgatus, strain NCTC 11154",Bacteroides vulgatus,NC_009614,nucleotide,NA
+"Bifidobacterium adolescentis, strain E194a (Variant a)",Bifidobacterium adolescentis,NC_008618,nucleotide,NA
+"Clostridium beijerinckii, strain NCIMB 8052",Clostridium beijerinckii,NC_009617,nucleotide,NA
+"Deinococcus radiodurans, strain R1 (smooth)",Deinococcus radiodurans,NC_001263,nucleotide,NA
+"Deinococcus radiodurans, strain R1 (smooth)",Deinococcus radiodurans,NC_001264,nucleotide,NA
+"Escherichia coli, strain MG1655",Escherichia coli,NC_000913,nucleotide,NA
+"Helicobacter pylori, strain 26695",Helicobacter pylori,NC_000915,nucleotide,NA
+"Lactobacillus gasseri, strain 63 AM",Lactobacillus gasseri,NC_008530,nucleotide,NA
+"Listeria monocytogenes, strain EGDe",Listeria monocytogenes,NC_003210,nucleotide,NA
+"Neisseria meningitidis, strain MC58",Neisseria meningitidis,NC_003112,nucleotide,NA
+"Porphyromonas gingivalis, strain 2561",Porphyromonas gingivalis,NC_010729,nucleotide,NA
+"Propionibacterium acnes, strain KPA171202",Propionibacterium acnes,NC_006085,nucleotide,NA
+"Pseudomonas aeruginosa, strain PAO1-LAC",Pseudomonas aeruginosa,NC_002516,nucleotide,NA
+"Rhodobacter sphaeroides, strain ATH 2.4.1",Rhodobacter sphaeroides,NC_007493,nucleotide,NA
+"Rhodobacter sphaeroides, strain ATH 2.4.1",Rhodobacter sphaeroides,NC_007494,nucleotide,NA
+"Staphylococcus epidermidis, FDA strain PCI 1200",Staphylococcus epidermidis,NC_004461,nucleotide,NA
+"Staphylococcus aureus, strain TCH1516",Staphylococcus aureus,NC_010079,nucleotide,NA
+"Streptococcus agalactiae, strain 2603 V/R",Streptococcus agalactiae,NC_004116,nucleotide,NA
+"Streptococcus mutans, strain UA159",Streptococcus mutans,NC_004350,nucleotide,NA
+"Streptococcus pneumoniae, strain TIGR4",Streptococcus pneumoniae,NC_003028,nucleotide,NA
+"Acinetobacter baumannii, strain 5377",Acinetobacter baumannii,GCA_000015425.1,assembly,From UNBIAS table

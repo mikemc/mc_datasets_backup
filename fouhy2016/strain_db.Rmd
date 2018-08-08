@@ -1,0 +1,174 @@
+---
+title: ""
+---
+
+# Getting ready
+
+Load packages.
+```{r libraries}
+library(ShortRead); packageVersion("ShortRead")
+library(Biostrings); packageVersion("Biostrings")
+# library(biomartr); packageVersion("biomartr")
+library(rentrez)
+
+library(tidyverse)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "fouhy2016")
+tax_path <- Sys.getenv("TAX_DB")
+species_path <- Sys.getenv("SPECIES_DB")
+reads_path <- file.path(data_path, "reads")
+blast_path <- file.path(data_path, "blast")
+```
+Load the sample metadata.
+```{r}
+sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
+```
+
+```{r}
+mock <- readr::read_csv(file.path(script_path, "mock.csv"))
+```
+
+# Strains
+
+## rentrez
+
+Next, do this for all the accessions, and save the fasta files. Then build
+a blast database. Then map the ASVs against the blast db.
+
+
+```{r}
+# mock <- readr::read_csv(file.path(script_path, "mock.csv")) %>%
+#     mutate(Species = str_extract(Organism, "\\w+ \\w+"),
+#         Database = ifelse(str_sub(Accession, 1, 1) == "N", "nucleotide",
+#             "assembly"))
+# mock <- mock %>%
+#     select(Organism, Species, Accession, Database, Notes) 
+# readr::write_csv(mock, file.path(script_path, "mock.csv"))
+
+mock <- readr::read_csv(file.path(script_path, "mock.csv"))
+# mock <- mock %>%
+#     mutate(
+#         Search_field = ifelse(str_detect(Accession, "\\."), "[ALL]", "[ACCN]"),
+#         Search_term = paste0(Accession, Search_field))
+
+term <- mock %>%
+    filter(Database == "nucleotide") %>%
+    {.$Accession} %>%
+    map_chr(paste0, "[ACCN]") %>%
+    glue::glue_collapse(sep = " OR ")
+nuc_search <- entrez_search(db = "nucleotide", term = term, retmax = 100)
+nuc_search
+
+term <- mock %>%
+    filter(Database == "assembly") %>%
+    {.$Accession} %>%
+    map_chr(paste0, "[ASAC]") %>%
+    glue::glue_collapse(sep = " OR ")
+assem_search <- entrez_search(db = "assembly", term = term, retmax = 100)
+assem_search
+assem_links <- entrez_link(db = "nucleotide", id = assem_search$ids, 
+    dbfrom = "assembly")
+
+nuc_ids <- c(nuc_search$ids, assem_links$links$assembly_nuccore)
+
+fasta <- entrez_fetch(db = "nucleotide", id = nuc_ids,
+    rettype = "fasta")
+
+dir.create(blast_path)
+write(fasta, file.path(blast_path, "mock_sequences.fasta"))
+
+refs <- Biostrings::readDNAStringSet(file.path(blast_path,
+        "mock_sequences.fasta"))
+names(refs)
+# Get rid of plasmids
+plasmids <- names(refs) %>%
+    str_detect("plasmid")
+Biostrings::writeXStringSet(refs[!plasmids,], 
+    file.path(blast_path, "mock_sequences.fasta"))
+```
+
+```{r}
+refs <- Biostrings::readDNAStringSet(file.path(blast_path,
+        "mock_sequences.fasta"))
+names(refs)
+
+# Let's check that these match the mock.csv
+# print(mock, n = Inf)
+ref_tb <- names(refs) %>%
+    str_match("(\\S+)\\.([0-9]+) (.+), (.+)") %>%
+    as_tibble %>%
+    select(-V1)
+names(ref_tb) <- c("Accession", "Version", "Organism", "Sequence_type")
+ref_tb <- ref_tb %>%
+    mutate(Species = str_extract(Organism, "\\w+ \\w+"),
+        Acc.ver = paste(Accession, Version, sep="."))
+
+setwd(blast_path)
+db_command <- paste("makeblastdb", "-in", "mock_sequences.fasta",
+    "-parse_seqids", "-dbtype nucl")
+system(db_command)
+list.files()
+
+st <- readRDS(file.path(data_path, "dada_out", "seqtab.nochim.Rds"))
+sequences <- Biostrings::DNAStringSet(colnames(st))
+names(sequences) <- paste0("SV", seq_along(sequences))
+Biostrings::writeXStringSet(sequences, 
+    file.path(blast_path, "sequences.fasta"))
+
+search_command <- paste("blastn", "-db", "mock_sequences.fasta",
+    "-perc_identity", 98,
+    "-outfmt", 7, 
+    "-query", "sequences.fasta", "-out", "blast_results.tsv")
+system(search_command)
+
+search_command <- paste("blastn", "-db", "mock_sequences.fasta",
+    "-perc_identity", 99,
+    "-query", "sequences.fasta", "-out", "blast_results.txt")
+system(search_command)
+
+# blastn -db nt -query nt.fsa -out results.out
+
+blastout <- readr::read_tsv(file.path(blast_path, "blast_results.tsv"),
+    comment = "#", 
+    col_names = c("Query", "Subject", "Perc_id", "Aln_len", "Mismatches",
+        "Gap_opens", "Q_start", "Q_end", "S_start", "S_end", "E_value",
+        "Bit_score")
+    )
+# 'qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore'
+blastout <- blastout %>%
+    left_join(select(ref_tb, Acc.ver, Species), by = c("Subject" = "Acc.ver"))
+# Fields: query acc.ver, subject acc.ver, % identity, alignment length, mismatches, gap opens, q. start, q. end, s. start, s. end, evalue, bit score
+
+```
+See also
+https://support.bioconductor.org/p/86440/
+
+Next, need to add the species/strain info. 
+
+Note: The first 2 bp usually don't match, suggesting these 2 bp are not
+biological sequences.
+
+```{r}
+best <- blastout %>%
+    select(Query, Species, Perc_id:Gap_opens, E_value) %>%
+    distinct() %>%
+    group_by(Query) %>%
+    top_n(1, -E_value)
+# best$Mismatches
+# best$Gap_opens
+print(best, n = Inf)
+
+# Strains without a hit
+setdiff(names(sequences), blastout$Query)
+
+```
+
+Should also check cases where there are close hits from different species.
+```{r}
+
+```
