@@ -1,0 +1,242 @@
+
+# Getting ready
+
+Load packages.
+```{r libraries}
+# library(dada2); packageVersion("dada2")
+# library(ShortRead); packageVersion("ShortRead")
+# library(Biostrings); packageVersion("Biostrings")
+
+library(tidyverse)
+library(magrittr)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "fouhy2016")
+tax_path <- Sys.getenv("TAX_DB")
+species_path <- Sys.getenv("SPECIES_DB")
+reads_path <- file.path(data_path, "reads")
+```
+Load the sample metadata and primer sequences.
+```{r}
+sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
+primers <- readr::read_csv(file.path(script_path, "primers.csv"))
+```
+
+## Re-organize the raw read data
+
+TODO: change sample name format in sam, before fixing the map files to match
+
+
+```{r}
+setwd(file.path(reads_path, "raw"))
+list.files()
+
+ftb <- tribble(~Run, ~Map, ~Barcode, ~Forward, ~Reverse,
+    "miseq_v12", "v1v2_mock_map", "V1V2_S1_L001_I1_001.fastq.gz",
+    "V1V2_S1_L001_R1_001.fastq.gz", "V1V2_S1_L001_R2_001.fastq.gz",
+    "miseq_v12deg", "v1v2_deg_mock_map", "tdeg_S1_L001_I1_001.fastq.gz", 
+    "tdeg_S1_L001_R1_001.fastq.gz", "tdeg_S1_L001_R2_001.fastq.gz",
+    "miseq_v45", "v4v5_mock_map", "V4V5_S1_L001_I1_001.fastq.gz",
+    "V4V5_S1_L001_R1_001.fastq.gz", "V4V5_S1_L001_R2_001.fastq.gz",
+    "pgm_v12", NA, NA, "v1v2_pgm.fastq.gz", NA,
+    "pgm_v12deg", NA, NA, "v1v2_deg_pgm.fastq.gz", NA,
+    "pgm_v45", NA, NA, "v4v5_pgm_fastq.gz", NA,
+    )
+ftb
+
+ftb0 <- ftb %>%
+    gather("Type", "Name", -Run) %>%
+    filter(!is.na(Name))
+ftb0 <- ftb0 %>%
+    mutate(New_name = case_when(
+            Type == "Map" ~ paste0(Run, "_map.tsv"),
+            Type == "Barcode" ~ "barcodes.fastq.gz",
+            Type == "Forward" ~ "forward.fastq.gz",
+            Type == "Reverse" ~ "reverse.fastq.gz"),
+        New_path = case_when(
+            Type == "Map" ~ file.path(New_name),
+            Type != "Map" ~ file.path(Run, New_name)
+            )
+        )
+ftb0 <- ftb0 %>%
+    arrange(Run)
+ftb0
+
+walk(ftb0$Run, dir.create)
+walk2(ftb0$Name, ftb0$New_path, file.rename)
+list.files()
+```
+
+
+## Demultiplex the MiSeq data
+
+<!-- https://docs.qiime2.org/2018.6/tutorials/importing/ -->
+<!-- https://docs.qiime2.org/2018.6/tutorials/exporting/ -->
+<!-- https://docs.qiime2.org/2018.6/plugins/available/demux/emp-paired/ -->
+
+Put demultiplexed reads in "reads/demultiplexed"
+
+Let's do this with QIIME2 (the authors used QIIME). For QIIME2 import, we need
+the files with names forward.fastq.gz reverse.fastq.gz barcodes.fastq.gz and in
+a folder for that run.
+
+First we need to import into QIIME2.
+```{r}
+# setwd(reads_path)
+runs <- c("miseq_v12", "miseq_v12deg", "miseq_v45")
+dir.create(file.path(reads_path, "qiime2"))
+
+q2_import_command <- function (run) {
+    fp.raw <- file.path(reads_path, "raw", run) 
+    fp.q2 <- file.path(reads_path, "qiime2", paste0(run, ".qza"))
+    command <- paste("qiime tools import --type EMPPairedEndSequences",
+      "--input-path", fp.raw,
+      "--output-path", fp.q2)
+    command
+}
+# Generate the commands, but run from a bash terminal with qiime loaded.
+map(runs, q2_import_command)
+```
+
+Next, adjust the map files to have informative sample names, and then generate
+and run the demux command.
+
+```{r}
+revise_map <- function(run) {
+    fp.map <- file.path(reads_path, "raw", paste0(run, "_map.tsv"))
+    fp.newmap <- file.path(reads_path, "raw", paste0(run, "_map_mod.tsv"))
+    mtb <- readr::read_tsv(fp.map)
+    mtb <- mtb %>% 
+        mutate(`#SampleID` = paste(run, Description, sep="."))
+    readr::write_tsv(mtb, fp.newmap)
+}
+walk(runs, revise_map)
+```
+
+Demultiplex: 
+```{r}
+q2_demux_command <- function (run) {
+    fp.q2 <- file.path(reads_path, "qiime2", paste0(run, ".qza"))
+    fp.map <- file.path(reads_path, "raw", paste0(run, "_map_mod.tsv"))
+    fp.demux <- file.path(reads_path, "qiime2", paste0(run, "_demux.qza"))
+    command <- paste("qiime demux emp-paired",
+        "--i-seqs", fp.q2,
+        "--m-barcodes-file", fp.map,
+        "--p-rev-comp-mapping-barcodes",
+        "--m-barcodes-column", "BarcodeSequence",
+        "--o-per-sample-sequences", fp.demux
+        )
+    command
+}
+map(runs, q2_demux_command)
+```
+
+Export to fastq files.
+```{r}
+q2_export_command <- function (run) {
+    fp.demux <- file.path(reads_path, "qiime2", paste0(run, "_demux.qza"))
+    dir.fastq <- file.path(reads_path, "demultiplexed")
+    command <- paste("qiime tools export", fp.demux, 
+        "--output-dir", dir.fastq)
+}
+map(runs, q2_export_command)
+```
+
+Rename the files to something nicer. Perhaps just replace periods with
+underscores. A better way to do this might have been when creating
+the sample names before demultiplexing.
+```{r}
+demux_path <- file.path(reads_path, "demultiplexed")
+fns <- list.files(demux_path, pattern = "fastq.gz")
+fns.new <- fns %>%
+    str_extract(".+(?=\\.fastq\\.gz)") %>%
+    str_replace_all("\\.", "_") %>%
+    paste0(".fastq.gz")
+file.rename(file.path(demux_path, fns), file.path(demux_path, fns.new))
+list.files(demux_path)
+```
+
+This concludes processing of the MiSeq data in prep for DADA2.
+
+# (SCRATCH) Demultiplex the raw sequence data 
+
+Put demultiplexed reads in "reads/demultiplexed"
+
+## PGM reads
+
+```{r}
+barcodes <- primers %>%
+    filter(Direction == "Forward") %$%
+    split(Barcode, Primer_set)
+
+fns <- file.path(reads_path, "raw", "pgm", 
+    c("v1v2_deg_pgm.fastq.gz", "v1v2_pgm.fastq.gz", "v4v5_pgm_fastq.gz"))
+names(fns) <- c("V12d", "V12", "V45")
+
+dna <- readDNAStringSet(fns["V45"], format = "fastq")
+# x <- dna %>% as.character
+
+# d <- DNABarcodes::demultiplex(x, barcodes[["V45"]])
+#
+# d
+
+```
+
+## MiSeq reads
+
+```{r}
+list.files()
+# [1] "barcodes.fastq.gz" "forward.fastq.gz"  "reverse.fastq.gz" 
+
+dada2:::rc("CATTATGGCGTG")
+
+# fs <- readDNAStringSet("forward.fastq.gz", format = "fastq")
+barcodes <- readDNAStringSet("barcodes.fastq.gz", format = "fastq")
+bc_map <- readr::read_tsv("v4v5_mock_map")
+bc_map <- bc_map %>%
+    mutate(RC = dada2:::rc(BarcodeSequence))
+readr::write_tsv(bc_map, "/tmp/index_deML.tsv")
+
+barcode_hits <- function(bc, reads) {
+    nhits <- vcountPattern(bc, reads, fixed = TRUE)
+    return(sum(nhits > 0))
+}
+
+li0 <- bc_map$BarcodeSequence %>%
+    map(barcode_hits, reads = barcodes)
+li <- bc_map$RC %>%
+    map(barcode_hits, reads = barcodes)
+
+length(barcodes)
+li %>%
+    unlist %>%
+    sum
+
+bc_map0 <- bc_map %>%
+    select(Index1 = RC, Name = Description)
+readr::write_tsv(bc_map0, "/tmp/index_deML.tsv")
+```
+
+Barcodes in the map file need to be RC'd.
+
+
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
