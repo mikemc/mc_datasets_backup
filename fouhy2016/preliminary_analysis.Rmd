@@ -145,7 +145,6 @@ rbind(FWD = sapply(FWD.orients, primerHits, fn = fns.cut[[1]]),
     REV = sapply(REV.orients, primerHits, fn = fns.cut[[1]]))
 ```
 
-
 # Choosing filter and trim parameters
 
 ## Read length distribution
@@ -163,7 +162,7 @@ TODO: figure out how to verify the target length after primers removed.
 
 We start by visualizing the quality profiles of the forward reads:
 ```{r see_quality}
-qps <- plotQualityProfile(fns)
+qps <- plotQualityProfile(fns.cut)
 qps + 
     geom_vline(xintercept = 300) +
     geom_vline(xintercept = 365)
@@ -186,8 +185,8 @@ we can assign our SVs to the mock strains.
 ```{r filter, message=FALSE, warning=FALSE}
 # Place filtered files in filtered/ subdirectory
 filts <- file.path(reads_path, "filtered", 
-    paste0(names(fns), "_filt.fastq.gz"))
-out <- filterAndTrim(fns, filts, truncLen = 300,
+    paste0(names(fns.cut), "_filt.fastq.gz"))
+out <- filterAndTrim(fns.cut, filts, truncLen = 300,
               maxN = 0, maxEE = 2, truncQ = 2, rm.phix = TRUE,
               compress = TRUE, multithread = TRUE)
 head(out)
@@ -197,6 +196,7 @@ head(out)
 
 ```{r learn_errors}
 err <- learnErrors(filts, multithread = TRUE)
+# my_save(err)
 ```
 
 Check the estimated error rates:
@@ -269,9 +269,6 @@ TODO: print the tax db file names to show the silva versions.
 
 ```{r taxify}
 tax <- assignTaxonomy(seqtab.nochim, tax_path, multithread=TRUE)
-```
-
-```{r species}
 tax <- addSpecies(tax, species_path)
 ```
 

@@ -1,0 +1,398 @@
+
+# Notes
+
+[Note about using dada2 with Ion Torrent data](https://benjjneb.github.io/dada2/faq.html#can-i-use-dada2-with-my-454-or-ion-torrent-data)
+
+PGM reads are single end; MiSeq reads are paired end. Since I don't know how to
+split the MiSeq reads, let's just work with the PGM reads.
+
+# Starting point
+
+Reads are stored in `DATA_PATH/fouhy2016/reads` in compressed fastq files named
+by the SRA run accession. 
+
+Next, I need to check that all non-biological nucleotides have been removed,
+e.g. primers.
+
+I need to pick filter and trim parameters.
+
+The lengths of the reads are highly variable and so I'll need to look at the
+length distribution and decide what length to filter below (`maxLen`).
+
+# Getting ready
+
+Load packages.
+```{r libraries}
+library(dada2); packageVersion("dada2")
+library(ShortRead); packageVersion("ShortRead")
+library(Biostrings); packageVersion("Biostrings")
+
+library(tidyverse)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "fouhy2016")
+tax_path <- Sys.getenv("TAX_DB")
+species_path <- Sys.getenv("SPECIES_DB")
+reads_path <- file.path(data_path, "reads", "sra")
+```
+Load the sample metadata.
+```{r}
+sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv")) %>%
+    filter(Sequencer == "PGM")
+```
+Get the sequence files downloaded from the SRA.
+```{r filenames}
+sam <- sam %>%
+    mutate(Fn_SRA = file.path(reads_path, paste0(SRA_run, ".fastq.gz")))
+```
+
+Load the primer info, copied from Table 4 of Fouhy2016.
+```{r load_primers}
+primers <- readr::read_csv(file.path(script_path, "primers_pgm.csv"))
+print(primers)
+```
+
+# Check for primers.
+
+```{r}
+primers0 <- primers %>%
+    select(Primer_set, Direction, Spacer, Primer_sequence) %>%
+    distinct() %>%
+    mutate(To_cut = paste0(Spacer, Primer_sequence))
+```
+
+Following the DADA2 ITS workflow tutorial on checking for and removing primers.
+```{r}
+all_orients <- function(primer) {
+    # Create all orientations of the input sequence
+    require(Biostrings)
+    # The Biostrings works w/ DNAString objects rather than character vectors
+    dna <- DNAString(primer)
+    orients <- c(Forward = dna, Complement = complement(dna), 
+        Reverse = reverse(dna), RevComp = reverseComplement(dna))
+    return(sapply(orients, toString))  # Convert back to character vector
+}
+primers1 <- primers0 %>%
+    select(Primer_set, Direction, To_cut) %>%
+    mutate(Direction = case_when(
+            Direction == "Forward" ~ "FWD",
+            Direction == "Reverse" ~ "REV")
+        ) %>%
+    spread(Direction, To_cut) %>%
+    mutate(FWD_orients = map(FWD, all_orients),
+        REV_orients = map(REV, all_orients))
+```
+
+TODO: only run filter and trim if files not yet existing.
+```{r}
+# Put N-filtered files in filtN/ subdirectory
+sam <- sam %>%
+    mutate(Fn_filtN = file.path(reads_path, "filtN", basename(Fn_SRA)))
+
+out <- filterAndTrim(sam$Fn_SRA, sam$Fn_filtN, maxN = 0, multithread = TRUE)
+print(out)
+```
+
+**TODO:** No files were filtered, so replace the above by simply checking that
+there are no Ns.
+
+Check one of the files to verify primer sequence orientation as in the
+tutorial. (Though might be good to check one sample for each primer set).
+```{r}
+primer_hits <- function(primer, fn) {
+    # Counts number of reads in which the primer is found
+    nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+    return(sum(nhits > 0))
+}
+# Use the first sample as our test case
+eg <- left_join(sam, primers1, by = c("Primer" = "Primer_set")) %>%
+    slice(1)
+# See what orientation the primers are in
+rbind(FWD = sapply(eg$FWD_orients[[1]], primer_hits, fn = eg$Fn_filtN), 
+    REV = sapply(eg$REV_orients[[1]], primer_hits, fn = eg$Fn_filtN))
+```
+So we want to trim FWD and the reverse-complement of REV from the reads.
+```{r}
+system2("cutadapt", args = "--version")
+
+cut_path <- file.path(reads_path, "cutadapt")
+if(!dir.exists(cut_path)) dir.create(cut_path)
+
+sam <- sam %>%
+    mutate(Fn_cutadapt = file.path(reads_path, "cutadapt", basename(Fn_SRA)))
+sam <- left_join(sam, select(primers1, Primer = Primer_set, FWD, REV), 
+    by = "Primer")
+    
+fn.report <- file.path(cut_path, "cutadapt_report.txt")
+for (i in seq(nrow(sam))) {
+    sr <- sam[i,]
+    FWD <- sr$FWD
+    REV.rc <- dada2:::rc(sr$REV)
+    # Trim FWD and the reverse-complement of REV off of reads
+    # flags <- paste("-g", paste0("^", FWD), "-a", REV.RC) 
+    flags <- paste("-a", paste0(FWD, "...", REV.rc))
+    # Run Cutadapt
+    command <- paste("cutadapt", flags, 
+        "--minimum-length 1", 
+        "-o", sr$Fn_cutadapt, 
+        sr$Fn_filtN,
+        "| tee -a", fn.report)
+    system(command)
+}
+```
+
+Check that primers are (mostly) gone.
+```{r}
+eg <- left_join(sam, primers1, by = c("Primer" = "Primer_set")) %>%
+    slice(1)
+print(eg)
+rbind(FWD = sapply(eg$FWD_orients[[1]], primer_hits, fn = eg$Fn_cutadapt), 
+    REV = sapply(eg$REV_orients[[1]], primer_hits, fn = eg$Fn_cutadapt))
+eg <- left_join(sam, primers1, by = c("Primer" = "Primer_set")) %>%
+    slice(6)
+print(eg)
+rbind(FWD = sapply(eg$FWD_orients[[1]], primer_hits, fn = eg$Fn_cutadapt), 
+    REV = sapply(eg$REV_orients[[1]], primer_hits, fn = eg$Fn_cutadapt))
+eg <- left_join(sam, primers1, by = c("Primer" = "Primer_set")) %>%
+    slice(15)
+print(eg)
+rbind(FWD = sapply(eg$FWD_orients[[1]], primer_hits, fn = eg$Fn_cutadapt), 
+    REV = sapply(eg$REV_orients[[1]], primer_hits, fn = eg$Fn_cutadapt))
+```
+
+Should perhaps tolerate more errors in the reverse read. But since we'll
+truncate the reads, the reverse primer sequence should get removed anyways.
+
+
+```{r}
+```
+```{r}
+```
+```{r}
+```
+```{r}
+```
+```{r}
+```
+
+HERE
+
+File names for the next phase in the pipeline.
+```{r}
+sam <- sam %>%
+    mutate(Fn_filt = file.path(reads_path, "filtered", 
+            basename(Fn_SRA)))
+```
+
+
+
+# Inspect read quality profiles and choose `truncLen`
+
+We start by visualizing the quality profiles of the reads, grouped by primer
+set:
+```{r see_quality}
+# fn.split <- sam %>%
+#     group_by(Primer) %>%
+#     {split(.$Fn_cutadapt, .$Primer)}
+# qps <- fn.split %>%
+#     map(plotQualityProfile)
+# qps$V12 + 
+#     geom_vline(xintercept = 290)
+# qps$V12d + 
+#     geom_vline(xintercept = 290)
+# qps$V45 + 
+#     geom_vline(xintercept = 300) +
+#     geom_vline(xintercept = 360)
+
+
+results <- sam %>%
+    group_by(Primer) %>%
+    summarize(Fn_cutadapt = list(Fn_cutadapt),
+        Fn_filt = list(Fn_filt))
+results <- results %>%
+    rowwise() %>%
+    mutate(Qps = list(plotQualityProfile(unlist(Fn_cutadapt))))
+
+# Check them out with possible truncLen's
+results
+results[[1,"Qps"]] + geom_vline(xintercept = 290)
+results[[2,"Qps"]] + geom_vline(xintercept = 290)
+results[[3,"Qps"]] + geom_vline(xintercept = 300) +
+    geom_vline(xintercept = 360)
+
+results <- results %>%
+    add_column(truncLen = c(290, 290, 360))
+```
+
+From the DADA2 tutorial:
+
+> In gray-scale is a heat map of the frequency of each quality score at each base
+> position. The median quality score at each position is shown by the green line,
+> and the quartiles of the quality score distribution by the orange lines. The
+> red line shows the scaled proportion of reads that extend to at least that
+> position (this is more useful for other sequencing technologies, as Illumina
+> reads are typically all the same length, hence the flat red line).
+
+For V45, we could truncate at ~300 to keep more reads, or at ~360 to try to
+gain enough resolution to distinguish the Staph strains. Since it's a low
+complexity community, we might suppose throwing out more reads is fine; but
+some strains are strongly biased against and may be rare or absent; greater
+read depth will help in determining their bias. For now, let's use the longer
+amplicon length to try to gain taxonomic resolution.
+
+# Filter and trim
+
+```{r filter, message=FALSE, warning=FALSE}
+results <- results %>%
+    rowwise() %>%
+    mutate(Track = list( filterAndTrim(
+            unlist(Fn_cutadapt), unlist(Fn_filt), 
+            truncLen = truncLen, 
+            maxN = 0, maxEE = 2, truncQ = 2, rm.phix = TRUE, 
+            compress = TRUE, multithread = TRUE) 
+            )
+        )
+
+print(results$Track)
+
+# out.v45 <- filterAndTrim(sam.v45$Fn_cut, sam.v45$Fn_filt, 
+#     truncLen = 360, maxN = 0, maxEE = 2, truncQ = 2, rm.phix = TRUE,
+#     compress = TRUE, multithread = TRUE)
+# head(out.v45)
+```
+
+
+# Learn the Error Rates
+
+Learn the errors rates:
+```{r learn_errors}
+results <- results %>%
+    rowwise() %>%
+    mutate(Err = list( learnErrors(unlist(Fn_filt), multithread = TRUE) ))
+dir.create(file.path(data_path, "intermediate"))
+saveRDS(results$Err, 
+    file.path(data_path, "intermediate", "sra-pgm_error_profiles.Rds"))
+```
+Plot the estimated error rates:
+```{r plot_errors, warning=FALSE}
+plotErrors(results$Err[[1]], nominalQ = TRUE)
+plotErrors(results$Err[[2]], nominalQ = TRUE)
+plotErrors(results$Err[[3]], nominalQ = TRUE)
+```
+
+# Dereplication
+
+```{r dereplicate, message=FALSE}
+results <- results %>%
+    rowwise() %>%
+    mutate(Dereps = list( derepFastq(Fn_filt, verbose=TRUE)))
+```
+
+# Sample Inference
+
+```{r dada}
+# dada_obj <- dada(dereps, err = err, multithread = TRUE)
+results <- results %>%
+    rowwise() %>%
+    mutate(Dadas = list( dada(Dereps, err = Err, multithread = TRUE) ) )
+```
+
+HERE
+
+# Construct sequence table
+
+```{r seqtab}
+results <- results %>%
+    rowwise() %>%
+    mutate(Seqtab = list(makeSequenceTable(Dadas)))
+results$Seqtab %>%
+    map(dim)
+# Inspect distribution of sequence lengths
+results$Seqtab %>%
+    map(~table(nchar(getSequences(.))))
+```
+All sequences have the same length, since we are using truncated single-end
+reads.
+
+# Remove chimeras
+
+```{r chimeras, message=FALSE}
+results <- results %>%
+    rowwise() %>%
+    mutate(Seqtab.nochim = list(removeBimeraDenovo(Seqtab, 
+                method="consensus", multithread=TRUE, verbose=TRUE)))
+results %>%
+    summarize(SVs_before = ncol(Seqtab), 
+        SVs_after = ncol(Seqtab.nochim),
+        Frac_SVs_kept = ncol(Seqtab.nochim) / ncol(Seqtab),
+        Frac_reads_kept = sum(Seqtab.nochim) / sum(Seqtab))
+```
+
+I wonder if the reverse primer is not completely removed from the v45 reads.
+
+# Track reads through the pipeline
+
+Check number of reads that made it through each step in the pipeline:
+```{r track}
+getN <- function(x) sum(getUniques(x))
+
+results <- results %>%
+    rowwise() %>%
+    mutate(Track_tot = list(
+            cbind(Track, sapply(Dadas, getN), rowSums(Seqtab.nochim)))
+        )
+results$Track_tot
+# colnames(track) <- c("input", "filtered", "denoised", "nonchim")
+```
+
+# Assign taxonomy
+
+TODO: print the tax db file names to show the silva versions.
+
+```{r add_tax}
+results <- results %>%
+    rowwise() %>%
+    mutate(Tax = list(assignTaxonomy(Seqtab.nochim, tax_path,
+                multithread=TRUE)),
+        Tax = list(addSpecies(Tax, species_path)))
+```
+Could also combine into one seqtab before assigning taxonomy.
+
+Save stuff.
+```{r}
+dir.create(file.path(data_path, "intermediate"))
+select(results, -Qps, -Dereps, -Dadas) %>%
+    saveRDS(file.path(data_path, "intermediate", "sra-pgm_dada_results.Rds"))
+```
+
+# Combine into one phyloseq object
+
+```{r}
+library(phyloseq)
+
+OTUs <- results$Seqtab.nochim %>%
+    map(otu_table, taxa_are_rows = FALSE)
+TAXs <- results$Tax %>%
+    map(tax_table)
+ps_list <- map2(OTUs, TAXs, phyloseq)
+ps <- do.call(merge_phyloseq, ps_list)
+sample_names(ps) <- sample_names(ps) %>%
+    str_extract("SRR[0-9]+")
+sample_names(ps) <- sam$Sample[match(sample_names(ps), sam$SRA_run)]
+SAM <- sam %>%
+    select(Sample:SRA_run) %>%
+    select(-Sample) %>%
+    data.frame(row.names = sam$Sample) %>%
+    sample_data
+ps <- merge_phyloseq(ps, SAM)
+sequences <- Biostrings::DNAStringSet(taxa_names(ps))
+names(sequences) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, sequences)
+ps
+saveRDS(ps, file.path(data_path, "final", "sra-pgm_phyloseq.Rds"))
+```
+

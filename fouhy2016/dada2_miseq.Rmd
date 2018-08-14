@@ -1,0 +1,75 @@
+
+# Getting ready
+
+Load packages.
+```{r libraries}
+library(dada2); packageVersion("dada2")
+library(ShortRead); packageVersion("ShortRead")
+library(Biostrings); packageVersion("Biostrings")
+
+library(tidyverse)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"),
+    "fouhy2016")
+tax_path <- Sys.getenv("TAX_DB")
+species_path <- Sys.getenv("SPECIES_DB")
+reads_path <- file.path(data_path, "reads")
+```
+Load the sample metadata.
+```{r}
+sam <- readr::read_csv(file.path(script_path, "sample_metadata.csv"))
+```
+
+Get the sequence files, matched by sample.
+```{r filenames}
+# fns <- file.path(reads_path, paste0(sam0$SRA_run, ".fastq.gz"))
+fns <- list.files(file.path(reads_path, "demultiplexed"), 
+        pattern = "\\.fastq\\.gz")
+# Note glycerol is sometimes misspelled in the fns
+pat <- paste0("(miseq)_(v12|v12deg|v45)_(Qiagen|RBB|mock)_(dna|PBS|g[a-z]+)",
+    "_.+(R[1-2])_.+")
+ftb <- fns %>%
+    str_match(pat) %>%
+    as_tibble
+names(ftb) <- c("Demux", "Sequencer", "Primer", "Extraction", "Solvent",
+    "Direction")
+ftb <- ftb %>%
+    mutate(Sequencer = case_when(
+            Sequencer == "miseq" ~ "MiSeq"),
+        Primer = paste0("V", str_sub(Primer, 2, 4)),
+        Type = ifelse(Solvent == "dna", "DNA", "Cells"),
+        Extraction = ifelse(Type == "DNA", NA, Extraction),
+        Solvent = ifelse(Type == "DNA", NA, Solvent),
+        Solvent = str_replace(Solvent, "g.+", "Glycerol"),
+        Direction = case_when(
+            Direction == "R1" ~ "Forward",
+            Direction == "R2" ~ "Reverse")
+        )
+print(ftb, n=Inf)
+ftb <- select(sam, Sample:Mock) %>% 
+    left_join(ftb)
+```
+
+
+## Scratchpad
+
+```{r load_primers}
+primers <- readr::read_csv(file.path(script_path, "primers.csv"))
+print(primers)
+primers.v45 <- primers %>%
+    filter(Primer_set == "V45") %>%
+    select(Direction, Spacer, Primer_sequence) %>%
+    unique
+print(primers.v45)
+primer_pair <- primers.v45 %>%
+    mutate(Sequence = paste0(Spacer, Primer_sequence)) %>%
+    {split(.$Sequence, .$Direction)}
+FWD <- primer_pair$Forward
+REV <- primer_pair$Reverse
+```
+
+

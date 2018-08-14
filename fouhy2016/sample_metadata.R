@@ -83,12 +83,11 @@ all.equal(sam$Solvent, sam$Solvent.tb)
 # Create abbreviated sample names
 sam <- sam %>%
     mutate(Sample = paste0(
-            str_sub(Type, 1, 1), 
-            Primer,
             str_sub(Sequencer, 1, 1), 
+            Primer,
             str_sub(Extraction, 1, 1),
             str_sub(Solvent, 1, 1)
-            ) %>% str_replace("NANA", "")
+            ) %>% str_replace("NANA", "MD")
         )
 # Reorganize for saving
 sam <- sam %>%
