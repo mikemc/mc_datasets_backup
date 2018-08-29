@@ -1,0 +1,20 @@
+Taxon, Even, Staggered_A, Staggered_B
+Alternaria alternata, 1, 1, 1 
+Aspergillus flavus, 1, 10, 10
+Candida apicola, 1, 10, 10
+Chytriomyces hyalinus, 1, 10, 10
+Claviceps purpurea, 1, 10, 5
+Fusarium graminearum, 1, 100, 100
+Fusarium oxysporum, 1, 10, 10 
+Fusarium verticillioides, 1, 500, 1000
+Mortierella verticillata, 1, 10, 10
+Naganishia albida, 1, 1000, 500
+Neosartorya fischeri, 1, 10, 10
+Penicillium expansum, 1, 10, 10
+Rhizoctonia solani, 1, 5, 10
+Rhizomucor miehei, 1, 5, 5
+Rhizophagus irregularis, 1, 1, 1
+Saccharomyces cerevisiae, 1, 100, 2000
+Saitoella complicata, 1, 2000, 100
+Trichoderma reesei, 1, 10, 10
+Ustilago maydis, 1, 10, 10
