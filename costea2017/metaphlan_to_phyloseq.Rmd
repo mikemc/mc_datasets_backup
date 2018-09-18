@@ -26,7 +26,7 @@ script_path <- getwd()
 data_path <- file.path(Sys.getenv("DATA_DIR"),
     "costea2017")
 tree_path <- file.path(Sys.getenv("DATA_DIR"),
-    "taxonomy")
+    "taxonomy", "metaphlan2_selected.tree.reroot.nwk.bz2")
 ```
 
 ## Prepare the sample metadata
@@ -64,24 +64,8 @@ sam.ps <- sample_data(sam1)
 
 ## Prepare phylogeny
 
-Use the tree included in the Waldron lab's Bioconductor package
-`curatedMetagenomicData`.
-
-<!-- https://groups.google.com/forum/#!msg/metaphlan-users/qEIqLrI37g4/uwFtVeFmAgAJ -->
-
 ```{r}
-# Check if tree file already exists; if not, download it to data_path/taxonomy
-tree_url <-
-    "https://github.com/waldronlab/curatedMetagenomicData/blob/master/inst/extdata/metaphlan2_selected.tree.reroot.nwk.bz2?raw=true"
-if (!file.exists(file.path(tree_path,
-            "metaphlan2_selected.tree.reroot.nwk.bz2"))) {
-    download.file(tree_url, 
-        destfile = file.path(tree_path,
-            "metaphlan2_selected.tree.reroot.nwk.bz2"),
-        method = "auto")
-}
-tree <- ape::read.tree(file.path(tree_path,
-        "metaphlan2_selected.tree.reroot.nwk.bz2"))
+tree <- ape::read.tree(tree_path)
 tree
 ```
 

@@ -1,0 +1,45 @@
+---
+title: ""
+output:
+  html_document:
+    toc: false
+    toc_float: false
+    self_contained: true
+    code_folding: show
+---
+
+# Setup
+
+Load packages.
+```{r libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(phyloseq)
+```
+Set paths.
+```{r path}
+dotenv::load_dot_env("../.env")
+script_path <- getwd()
+data_path <- file.path(Sys.getenv("DATA_DIR"))
+tree_path <- file.path(Sys.getenv("DATA_DIR"),
+    "taxonomy")
+```
+
+# Prepare phylogeny
+
+Use the tree included in the Waldron lab's Bioconductor package
+`curatedMetagenomicData`.
+
+<!-- https://groups.google.com/forum/#!msg/metaphlan-users/qEIqLrI37g4/uwFtVeFmAgAJ -->
+
+```{r}
+# Check if tree file already exists; if not, download it to data_path/taxonomy
+tree_url <-
+    "https://github.com/waldronlab/curatedMetagenomicData/blob/master/inst/extdata/metaphlan2_selected.tree.reroot.nwk.bz2?raw=true"
+if (!file.exists(file.path(tree_path,
+            "metaphlan2_selected.tree.reroot.nwk.bz2"))) {
+    download.file(tree_url, 
+        destfile = file.path(tree_path,
+            "metaphlan2_selected.tree.reroot.nwk.bz2"),
+        method = "auto")
+}
+```
