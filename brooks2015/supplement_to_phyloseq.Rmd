@@ -34,6 +34,9 @@ dotenv::load_dot_env("../.env")
 script_path <- getwd()
 data_path <- file.path(Sys.getenv("DATA_DIR"),
     "brooks2015")
+tree_path <- file.path(Sys.getenv("DATA_DIR"),
+    "taxonomy", 
+    "metaphlan2_selected.tree.reroot.nwk.bz2")
 ```
 
 # Download supplemental files
@@ -63,15 +66,13 @@ urls <- paste0("https://static-content.springer.com/esm/",
     "12866_2015_351_MOESM", file_num, "_ESM.csv")
 fns <- file.path(data_path, "supplementary_files", 
     paste0("AdditionalFile", file_num, ".csv"))
-dir.create(file.path(data_path, "supplementary_files"), recursive = TRUE)
-walk2(urls, fns, download.file)
+if (!dir.exists(file.path(data_path, "supplementary_files"))) {
+    dir.create(file.path(data_path, "supplementary_files"), recursive = TRUE)
+    walk2(urls, fns, download.file)
+}
 ```
 
 # Build the species/OTU table
-
-```{r}
-setwd(file.path(data_path, "supplementary_files"))
-```
 
 This code is copied from pdf rmarkdown output provided by the authors as
 [Additional file 7](https://static-content.springer.com/esm/art%3A10.1186%2Fs12866-015-0351-6/MediaObjects/12866_2015_351_MOESM7_ESM.pdf)
@@ -89,8 +90,10 @@ organismsForPlots <- c("G. vaginalis", "A. vaginae", "L. crispatus",
 genomeSize <- c(1.65, 1.43, 2.04, 1.3, 2.47, 1.34, 2.2)
 copyNumbers <- c(2,1,4,1,1,1,7)
 # Read above-threshold counts data. Remove last (blank) column.
-countdata <- read.table("AdditionalFile10.csv", sep=",", header=TRUE,
-    row.names=1, colClasses=c("character", rep("numeric", 46)))
+countdata <- read.table(
+    file.path(data_path, "supplementary_files", "AdditionalFile10.csv"), 
+    sep=",", header=TRUE, row.names=1, 
+    colClasses=c("character", rep("numeric", 46)))
 countdata <- countdata[,-c(ncol(countdata))]
 atOrganisms <- colnames(countdata)
 # Summarize the number of counts per sample.
@@ -99,7 +102,9 @@ summary(atcounts)
 # Calculate the total number above-threshold reads.
 sum(atcounts)
 # Read the below-threshold counts data.
-btdata <- read.table("AdditionalFile11.csv", sep=",", header=TRUE, row.names=1)
+btdata <- read.table(
+    file.path(data_path, "supplementary_files", "AdditionalFile11.csv"), 
+    sep=",", header=TRUE, row.names=1)
 btdata <- btdata[,-c(ncol(btdata))]
 btOrganisms <- sub("BT","", colnames(btdata))
 # Parse the sample IDs to get the plate and barcode numbers.
@@ -116,7 +121,9 @@ btdata <- data.frame(btdata, Plate, Barcode)
 btdata <- btdata[order(Plate, Barcode),]
 # Read in the design from AdditionalFile2.csv and merge with the
 # above-threshold counts data.
-design <- read.table("AdditionalFile2.csv", sep=",", header=TRUE, row.names=1,
+design <- read.table(
+    file.path(data_path, "supplementary_files", "AdditionalFile2.csv"), 
+    sep=",", header=TRUE, row.names=1,
     colClasses = c(rep("character",2), rep("numeric",9)) )
 alldata <- merge(design, atdata, by=c("Plate", "Barcode"), all=TRUE)
 alldata[,4:ncol(alldata)] <- sapply(alldata[,4:ncol(alldata)], as.numeric)
@@ -240,3 +247,120 @@ st <- st %>%
 ps <- phyloseq(sam, st)
 saveRDS(ps, file.path(data_path, "final", "brooks_phyloseq.Rds"))
 ```
+
+# Add taxonomy and phylogeny
+
+```{r}
+tax <- tax_table(tax_mat)
+ps <- phyloseq(sam, st, tax)
+```
+
+
+TODO: do this in a better and programmatic way.
+
+```{r}
+# tax_path <- Sys.getenv("TAX_DB")
+# species_path <- Sys.getenv("SPECIES_DB")
+
+species_list <- c("Gardnerella vaginalis", "Atopobium vaginae",
+    "Lactobacillus crispatus", "Lactobacillus iners",
+    "Prevotella bivia", "Sneathia amnii", "Streptococcus agalactiae") %>%
+    str_replace(" ", "_")
+species_list %>% str_split("_") %>% map_chr(2)
+
+# Manually looked up tax info to genus level in the headers of the silva tax db
+# formatted for DADA2.
+
+# >Bacteria;Actinobacteria;Actinobacteria;Bifidobacteriales;Bifidobacteriaceae;Gardnerella;vaginalis
+# >Bacteria;Actinobacteria;Coriobacteriia;Coriobacteriales;Atopobiaceae;Atopobium;vaginae
+# >Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;crispatus
+# >Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;iners
+# >Bacteria;Bacteroidetes;Bacteroidia;Bacteroidales;Prevotellaceae;Prevotella;bivia
+# >Bacteria;Fusobacteria;Fusobacteriia;Fusobacteriales;Leptotrichiaceae;Sneathia;amnii
+# >Bacteria;Firmicutes;Bacilli;Lactobacillales;Streptococcaceae;Streptococcus;agalactiae
+
+taxa <- c("G.vaginalis", "A.vaginae", "L.crispatus", "L.iners", "P.bivia",
+    "S.amnii", "S.agalactiae")
+tax_vec <- c(
+    "Bacteria;Actinobacteria;Actinobacteria;Bifidobacteriales;Bifidobacteriaceae;Gardnerella;vaginalis",
+    "Bacteria;Actinobacteria;Coriobacteriia;Coriobacteriales;Atopobiaceae;Atopobium;vaginae",
+    "Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;crispatus",
+    "Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;iners",
+    "Bacteria;Bacteroidetes;Bacteroidia;Bacteroidales;Prevotellaceae;Prevotella;bivia",
+    "Bacteria;Fusobacteria;Fusobacteriia;Fusobacteriales;Leptotrichiaceae;Sneathia;amnii",
+    "Bacteria;Firmicutes;Bacilli;Lactobacillales;Streptococcaceae;Streptococcus;agalactiae"
+)
+names(tax_vec) <- taxa
+tax_mat <- tax_vec %>%
+    str_split(";", simplify = TRUE)
+rownames(tax_mat) <- taxa
+colnames(tax_mat) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
+    "Genus", "Species")
+```
+
+Load and prepare tree.
+
+```{r}
+tree <- ape::read.tree(tree_path)
+tree
+```
+
+```{r}
+species_list
+# [1] "Gardnerella_vaginalis"    "Atopobium_vaginae"       
+# [3] "Lactobacillus_crispatus"  "Lactobacillus_iners"     
+# [5] "Prevotella_bivia"         "Sneathia_amnii"          
+# [7] "Streptococcus_agalactiae"
+
+a <- species_list %>%
+    map(~str_subset(tree$tip.label, .))
+
+# Finds everything except S.amnii
+
+str_subset(tree$tip.label, "Sneathia")
+str_subset(tree$tip.label, "Leptotrichia")
+str_subset(tree$tip.label, "Leptotrichia_amnionii")
+
+str_subset(tree$tip.label, "Leptotrichia_amnionii")
+
+str_subset(tree$tip.label, "Streptobacillus_moniliformis")
+```
+
+
+Simplify the tip names to just the species. Need to first remove the few
+with no taxonomy.
+```{r}
+# Prune tips with no taxonomy
+tree0 <- str_detect(tree$tip.label, "s__") %>%
+    {tree$tip.label[!.]} %>%
+    ape::drop.tip(tree, .)
+# Simplify tip names
+tree_species <- tree0$tip.label %>% 
+    str_extract("(?<=s__)\\w+(?=\\|)")
+sum(is.na(tree_species))
+tree0$tip.label <- tree_species
+tree0
+```
+
+Let's use _Streptobacillus moniliformis_ for S. amnii, as it may be the closest
+species in the tree (see
+https://bmcgenomics.biomedcentral.com/articles/10.1186/1471-2164-13-S8-S4)
+```{r}
+tree1 <- tree0
+tree1$tip.label <- tree1$tip.label %>%
+    str_replace("Streptobacillus_moniliformis", "Sneathia_amnii")
+```
+
+```{r}
+ps0 <- ps
+taxa_names(ps0) <- species_list
+taxa_names(ps0) %in% taxa_names(tree1)
+ps0 <- merge_phyloseq(ps0, tree1)
+```
+
+```{r}
+phy_tree(ps0) %>% plot
+```
+
+TODO: change all code to use species names with an underscore. Prepend date to
+saved phyloseq object.
