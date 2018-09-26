@@ -24,7 +24,7 @@ tree_path <- file.path(Sys.getenv("DATA_DIR"),
     "taxonomy")
 ```
 
-# Prepare phylogeny
+# Metaphlan2-compatible phylogeny
 
 Use the tree included in the Waldron lab's Bioconductor package
 `curatedMetagenomicData`.
@@ -42,4 +42,70 @@ if (!file.exists(file.path(tree_path,
             "metaphlan2_selected.tree.reroot.nwk.bz2"),
         method = "auto")
 }
+```
+
+# GTDB phylogeny
+
+See http://gtdb.ecogenomic.org/downloads.
+
+```{r}
+dir.create(file.path(tree_path, "gtdb"))
+fns <- c("bac_taxonomy_r86.tsv", "bac120_r86.1.tree", "bac_metadata_r86.tsv")
+fps <- file.path(tree_path, "gtdb", fns)
+urls <- paste0("https://data.ace.uq.edu.au/public/gtdb/release86/", fns)
+for (i in seq_along(fns)) {
+    if (!file.exists(fps[i])) {
+        download.file(urls[i], fps[i])
+    }
+}
+```
+
+## Inspect the GTDB metadata and tree
+
+We need to manually tell readr that `ssu_gg_blast_bitscore`
+`ssu_silva_blast_bitscore` are doubles rather than ints to avoid a few parsing
+errors, and also that "none" is used for NA for one of the fields.
+```{r}
+tax_path <- file.path(Sys.getenv("DATA_DIR"), "taxonomy", "gtdb")
+
+gtdb_spec <- cols(
+    ssu_gg_blast_bitscore = col_double(),
+    ssu_silva_blast_bitscore = col_double()
+)
+
+gtdb <- read_tsv(file.path(tax_path, "bac_metadata_r86.tsv"),
+    col_types = gtdb_spec,
+    na = c("", "NA", "none"))
+```
+
+```{r}
+tree <- ape::read.tree(file.path(tax_path, "bac120_r86.1.tree"))
+```
+
+```{r}
+parse_taxonomy <- function (tax_string) {
+    rank_letters <- c("d", "p", "c", "o", "f", "g", "s")
+    tax_pattern  <- paste0("(?:", rank_letters, "__([\\w ]+))?") %>%
+        paste(collapse = "\\;?")
+    tax <- str_match(tax_string, tax_pattern)
+    colnames(tax) <- c("Clade", "Kingdom", "Phylum", "Class", "Order", 
+        "Family", "Genus", "Species")
+    tax %>% as_tibble
+}
+```
+
+Parse the taxonomy and keep linked to the accession and GTDB status for
+purposes of connecting to the phylogeny.
+```{r}
+tax <- gtdb$gtdb_taxonomy %>%
+    parse_taxonomy
+
+tax <- gtdb %>% 
+    select(accession, gtdb_representative, gtdb_genome_representative) %>%
+    bind_cols(tax) %>%
+    mutate(gtdb_representative = case_when(
+            gtdb_representative == "f" ~ FALSE,
+            gtdb_representative == "t" ~ TRUE
+        )
+        )
 ```
