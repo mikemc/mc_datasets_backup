@@ -34,9 +34,13 @@ dotenv::load_dot_env("../.env")
 script_path <- getwd()
 data_path <- file.path(Sys.getenv("DATA_DIR"),
     "brooks2015")
-tree_path <- file.path(Sys.getenv("DATA_DIR"),
-    "taxonomy", 
-    "metaphlan2_selected.tree.reroot.nwk.bz2")
+tax_path <- file.path(Sys.getenv("DATA_DIR"), "taxonomy", "gtdb")
+```
+
+```{r}
+prepend_date <- function (fn) {
+    paste(Sys.Date(), fn, sep="_")
+}
 ```
 
 # Download supplemental files
@@ -141,6 +145,9 @@ otherData <- alldata[,-match(c("Plate","Barcode","Experiment", organismsDesign,
         organismsResults), names(alldata))]
 otherCounts <- apply(as.matrix(otherData),1,sum)
 sum(otherCounts)
+```
+
+```{r}
 # Get the number of below-threshold reads classified as belonging to taxa not
 # in the study.
 allbtdata <- merge(btdata, atdata, by=c("Plate", "Barcode"), all=TRUE)
@@ -183,6 +190,9 @@ dataNorm[,c(organismsResults, "otherCounts")] <- dataNorm[,c(organismsResults,
 # Summarize the proportion of above-threshold reads classified as belonging to
 # taxa not in the study for each sample.
 summary(dataNorm$otherCounts)
+```
+
+```{r}
 # Make a data frame for each experiment.
 classcounts1 <- classcounts[experiment == 1]
 classcounts2 <- classcounts[experiment == 2]
@@ -231,8 +241,11 @@ sam <- sam %>%
 st <- tb %>%
     select(Sample, organismsResults)
 # Use consistent taxa names
-taxa <- c("G.vaginalis", "A.vaginae", "L.crispatus", "L.iners", "P.bivia",
-    "S.amnii", "S.agalactiae")
+# taxa <- c("G.vaginalis", "A.vaginae", "L.crispatus", "L.iners", "P.bivia",
+#     "S.amnii", "S.agalactiae")
+taxa <- c("Gardnerella_vaginalis", "Atopobium_vaginae",
+    "Lactobacillus_crispatus", "Lactobacillus_iners",
+    "Prevotella_bivia", "Sneathia_amnii", "Streptococcus_agalactiae")
 names(sam) <- names(sam) %>% {c(.[1:5], taxa)}
 names(st) <- names(st) %>% {c(.[1], taxa)}
 # Build a phyloseq object
@@ -245,122 +258,189 @@ st <- st %>%
     data.frame(row.names = st$Sample) %>%
     otu_table(taxa_are_rows = FALSE)
 ps <- phyloseq(sam, st)
-saveRDS(ps, file.path(data_path, "final", "brooks_phyloseq.Rds"))
+saveRDS(ps, file.path(data_path, "final", prepend_date("brooks_phyloseq.Rds")))
 ```
 
-# Add taxonomy and phylogeny
+# Add taxonomy and phylogeny using GTDB
 
-```{r}
-tax <- tax_table(tax_mat)
-ps <- phyloseq(sam, st, tax)
+```{r tax_setup}
+tax_path <- file.path(Sys.getenv("DATA_DIR"), "taxonomy", "gtdb")
+
+gtdb_spec <- cols(
+    ssu_gg_blast_bitscore = col_double(),
+    ssu_silva_blast_bitscore = col_double()
+)
+gtdb <- read_tsv(file.path(tax_path, "bac_metadata_r86.tsv"),
+    col_types = gtdb_spec,
+    na = c("", "NA", "none"))
+
+tree <- ape::read.tree(file.path(tax_path, "bac120_r86.1.tree"))
+
+parse_taxonomy <- function (tax_string) {
+    rank_letters <- c("d", "p", "c", "o", "f", "g", "s")
+    tax_pattern  <- paste0("(?:", rank_letters, "__([\\w ]+))?") %>%
+        paste(collapse = "\\;?")
+    tax <- str_match(tax_string, tax_pattern)
+    colnames(tax) <- c("Clade", "Kingdom", "Phylum", "Class", "Order", 
+        "Family", "Genus", "Species")
+    tax %>% as_tibble
+}
 ```
 
+The GTDB metadata table includes Silva, NCBI, and GTDB taxonomies and allows us
+to match accessions to leaves in the tree of the closest representative as well
+as info about which accessions are themselves in the tree.
 
-TODO: do this in a better and programmatic way.
+Our goal is to link the seven species to their representatives in the tree as
+well as get their taxonomy. Which taxonomy do we use? The GTDB taxonomy and to
+a lesser extent Silva taxonomy tend to use nonstandard names, so I'll use NCBI
+taxonomy for consistency with common usage.
 
 ```{r}
-# tax_path <- Sys.getenv("TAX_DB")
-# species_path <- Sys.getenv("SPECIES_DB")
-
+gtdb <- gtdb %>%
+    mutate(NCBI_species = str_extract(ncbi_taxonomy, "(?<=s__)[\\w ]+"))
 species_list <- c("Gardnerella vaginalis", "Atopobium vaginae",
     "Lactobacillus crispatus", "Lactobacillus iners",
-    "Prevotella bivia", "Sneathia amnii", "Streptococcus agalactiae") %>%
+    "Prevotella bivia", "Sneathia amnii", "Streptococcus agalactiae")
+gtdb0 <- gtdb %>%
+    filter(NCBI_species %in% species_list)
+# Number of accessions for the seven species:
+nrow(gtdb0)
+# Check that each species is represented in the tree
+gtdb0 %>%
+    filter(gtdb_representative == "t") %>%
+    select(NCBI_species) %>%
+    arrange(NCBI_species) %>%
+    distinct
+# So let's just restrict to genomes in the phylogeny
+gtdb1 <- gtdb0 %>%
+    arrange(NCBI_species) %>%
+    filter(gtdb_representative == "t")
+```
+
+```{r}
+gtdb1$ssu_silva_taxonomy %>% head
+
+silva <- gtdb1$ssu_silva_taxonomy %>%
+    str_split(";", simplify = TRUE) %>%
+    as_tibble
+names(silva) <- c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus",
+    "Species")
+silva <- silva %>%
+    mutate(Strain = Species,
+        Species = str_extract(Species, "^\\w+ \\w+")) %>%
+    add_column(Accession = gtdb1$accession, .before = 1) %>%
+    add_column(NCBI_species = gtdb1$NCBI_species, .before = 2)
+silva
+```
+
+```{r}
+gtdb1$ncbi_taxonomy %>% head
+ncbi <- gtdb1$ncbi_taxonomy %>%
+    parse_taxonomy %>%
+    rename(NCBI_taxonomy = Clade)
+ncbi <- ncbi %>%
+    add_column(Accession = gtdb1$accession, .before = 1) %>%
+    add_column(NCBI_species = gtdb1$NCBI_species, .before = 2)
+ncbi
+```
+
+Which accessions to use for the phylogeny?
+
+Do all share the same taxonomies?
+```{r}
+# NCBI taxonomy is always the same
+gtdb1 %>%
+    select(NCBI_species, ncbi_taxonomy) %>%
+    distinct
+
+# GTDB taxonomy can vary for three of the species
+gtdb1 %>%
+    select(NCBI_species, gtdb_taxonomy) %>%
+    distinct
+
+# Number of representative genomes to choose from 
+gtdb1 %>%
+    filter(gtdb_representative == "t") %>%
+    group_by(NCBI_species) %>%
+    summarize(Num_representatives = n())
+```
+
+```{r}
+# Silva taxonomy can vary for four of the species, but sometimes this is just
+# because of different strain or unidentified species
+gtdb1 %>%
+    select(NCBI_species, ssu_silva_taxonomy) %>%
+    distinct
+gtdb1 %>%
+    filter(NCBI_species == "Gardnerella vaginalis") %>%
+    .$ssu_silva_taxonomy %>%
+    unique
+```
+
+From http://vmc.vcu.edu/resources/vahmp, we could try to guess what the
+correct strians are.  E.g. for Gardnerella:
+```{r}
+"RS_GCF_000176475.1" %in% gtdb0$accession
+```
+
+But it problably doesn't matter which we use. Let's check by first pruning the
+tree to the possible representatives and coloring by species. If all strains
+with a given NCBI species cluster on the tree then we can just pick a random
+representative from each.
+```{r}
+library(ggtree)
+
+tree0 <- ape::drop.tip(tree, setdiff(tree$tip.label, silva$Accession))
+
+tb <- ncbi %>%
+    mutate(taxa = Accession) %>%
+    select(taxa, everything())
+
+g <- ggtree(tree0) %<+% tb
+
+g + geom_tiplab(aes(color = NCBI_species)) +
+    theme(legend.position = "right")
+```
+
+Since all species are monophyletic and all accessions within a species have a
+similar length from the root, it doesn't matter which accession we choose for
+each species. So I will choose the first (alphabetically by accession) that has
+a Silva taxonomy.
+
+```{r}
+tb0 <- tb %>%
+    group_by(Species) %>%
+    top_n(1, Accession)
+tree1 <- ape::drop.tip(tree0, setdiff(tree0$tip.label, tb0$Accession))
+tree1$tip.label <- tb0$NCBI_species[match(tree1$tip.label, tb0$Accession)]
+tb0 <- tb0 %>%
+    mutate(taxa = NCBI_species)
+(ggtree(tree1) %<+% tb0) + 
+    geom_tiplab(aes(color = NCBI_species)) +
+    theme(legend.position = "right")
+```
+
+Add tree and taxonomy to the phyloseq object:
+```{r}
+tax <- tb0 %>%
+    select(Taxon = taxa, Kingdom:Species)
+TAX <- tax %>%
+    select(-Taxon) %>%
+    as("matrix")
+rownames(TAX) <- tax$Taxon
+TAX <- tax_table(TAX)
+# Replace spaces with underscores:
+taxa_names(TAX) <- taxa_names(TAX) %>%
     str_replace(" ", "_")
-species_list %>% str_split("_") %>% map_chr(2)
-
-# Manually looked up tax info to genus level in the headers of the silva tax db
-# formatted for DADA2.
-
-# >Bacteria;Actinobacteria;Actinobacteria;Bifidobacteriales;Bifidobacteriaceae;Gardnerella;vaginalis
-# >Bacteria;Actinobacteria;Coriobacteriia;Coriobacteriales;Atopobiaceae;Atopobium;vaginae
-# >Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;crispatus
-# >Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;iners
-# >Bacteria;Bacteroidetes;Bacteroidia;Bacteroidales;Prevotellaceae;Prevotella;bivia
-# >Bacteria;Fusobacteria;Fusobacteriia;Fusobacteriales;Leptotrichiaceae;Sneathia;amnii
-# >Bacteria;Firmicutes;Bacilli;Lactobacillales;Streptococcaceae;Streptococcus;agalactiae
-
-taxa <- c("G.vaginalis", "A.vaginae", "L.crispatus", "L.iners", "P.bivia",
-    "S.amnii", "S.agalactiae")
-tax_vec <- c(
-    "Bacteria;Actinobacteria;Actinobacteria;Bifidobacteriales;Bifidobacteriaceae;Gardnerella;vaginalis",
-    "Bacteria;Actinobacteria;Coriobacteriia;Coriobacteriales;Atopobiaceae;Atopobium;vaginae",
-    "Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;crispatus",
-    "Bacteria;Firmicutes;Bacilli;Lactobacillales;Lactobacillaceae;Lactobacillus;iners",
-    "Bacteria;Bacteroidetes;Bacteroidia;Bacteroidales;Prevotellaceae;Prevotella;bivia",
-    "Bacteria;Fusobacteria;Fusobacteriia;Fusobacteriales;Leptotrichiaceae;Sneathia;amnii",
-    "Bacteria;Firmicutes;Bacilli;Lactobacillales;Streptococcaceae;Streptococcus;agalactiae"
-)
-names(tax_vec) <- taxa
-tax_mat <- tax_vec %>%
-    str_split(";", simplify = TRUE)
-rownames(tax_mat) <- taxa
-colnames(tax_mat) <- c("Kingdom", "Phylum", "Class", "Order", "Family",
-    "Genus", "Species")
-```
-
-Load and prepare tree.
-
-```{r}
-tree <- ape::read.tree(tree_path)
-tree
-```
-
-```{r}
-species_list
-# [1] "Gardnerella_vaginalis"    "Atopobium_vaginae"       
-# [3] "Lactobacillus_crispatus"  "Lactobacillus_iners"     
-# [5] "Prevotella_bivia"         "Sneathia_amnii"          
-# [7] "Streptococcus_agalactiae"
-
-a <- species_list %>%
-    map(~str_subset(tree$tip.label, .))
-
-# Finds everything except S.amnii
-
-str_subset(tree$tip.label, "Sneathia")
-str_subset(tree$tip.label, "Leptotrichia")
-str_subset(tree$tip.label, "Leptotrichia_amnionii")
-
-str_subset(tree$tip.label, "Leptotrichia_amnionii")
-
-str_subset(tree$tip.label, "Streptobacillus_moniliformis")
-```
-
-
-Simplify the tip names to just the species. Need to first remove the few
-with no taxonomy.
-```{r}
-# Prune tips with no taxonomy
-tree0 <- str_detect(tree$tip.label, "s__") %>%
-    {tree$tip.label[!.]} %>%
-    ape::drop.tip(tree, .)
-# Simplify tip names
-tree_species <- tree0$tip.label %>% 
-    str_extract("(?<=s__)\\w+(?=\\|)")
-sum(is.na(tree_species))
-tree0$tip.label <- tree_species
-tree0
-```
-
-Let's use _Streptobacillus moniliformis_ for S. amnii, as it may be the closest
-species in the tree (see
-https://bmcgenomics.biomedcentral.com/articles/10.1186/1471-2164-13-S8-S4)
-```{r}
-tree1 <- tree0
 tree1$tip.label <- tree1$tip.label %>%
-    str_replace("Streptobacillus_moniliformis", "Sneathia_amnii")
+    str_replace(" ", "_")
+ps0 <- merge_phyloseq(ps, TAX, tree1)
+ps0
+saveRDS(ps0, file.path(data_path, "final", 
+        prepend_date("brooks_phyloseq.Rds")))
 ```
 
-```{r}
-ps0 <- ps
-taxa_names(ps0) <- species_list
-taxa_names(ps0) %in% taxa_names(tree1)
-ps0 <- merge_phyloseq(ps0, tree1)
-```
 
-```{r}
-phy_tree(ps0) %>% plot
-```
 
-TODO: change all code to use species names with an underscore. Prepend date to
-saved phyloseq object.
+
