@@ -5,14 +5,16 @@
 library(tidyverse)
 library(magrittr)
 
-dotenv::load_dot_env("../.env")
+dotenv::load_dot_env("../../.env")
 script_path <- getwd()
 data_path <- file.path(Sys.getenv("DATA_DIR"),
-    "costea2015")
-metadata_path <- file.path(script_path, "original_method")
+    "costea2017")
+metadata_path <- file.path(script_path)
 aspera_path <- Sys.getenv("ASCP_PATH") %>%
     str_split(pattern = "\\|") %>%
-    {.[[1]][1]}
+    {.[[1]][1]} %>%
+    dirname %>%
+    dirname
 
 # Study in the ENA at https://www.ebi.ac.uk/ena/data/view/PRJEB14847
 # Accession info downloaded by choosing columns (with "Select columns" link)
@@ -55,14 +57,16 @@ ph3 <- ph3 %>%
 
 ## Download with ascp (aspera connect command line tool)
 aspera_urls <- ph3$fastq_aspera %>% str_split(";", simplify=TRUE) %>% c
-commands <- paste(file.path(aspera_path, "bin/ascp"),
+commands <- paste(
+    file.path(aspera_path, "bin/ascp"),
     "-QT -l 300m -P33001 -i", 
     file.path(aspera_path, "etc/asperaweb_id_dsa.openssh"),
     paste0("era-fasp@", aspera_urls),
     file.path(data_path, "reads")
     )
 walk(commands, system)
-# system(commands[5])
+# For testing the commands:
+system(commands[5])
 
 ## Check dowloaded files against md5sums
 downloads <- aspera_urls %>% 
@@ -70,8 +74,8 @@ downloads <- aspera_urls %>%
     file.path(data_path, "reads", .)
 md5sums_expected <- ph3$fastq_md5 %>% str_split(";", simplify=TRUE) %>% c
 md5sums_actual <- tools::md5sum(downloads)
-# Fraction of files that were successfully downloaded and so could give an md5
-mean(is.na(md5sums_actual))
+# Fraction of files that were successfully downloaded and gave an md5
+mean(!is.na(md5sums_actual))
 # Check that the downloaded files match the expected md5
 all(md5sums_expected == md5sums_actual, na.rm = TRUE)
 
